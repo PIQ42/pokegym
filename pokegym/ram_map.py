@@ -40,6 +40,7 @@ PLAYER_X = 0xC106
 WNUMSPRITES = 0xD4E1
 WNUMSIGNS = 0xD4B0
 WCUTTILE = 0xCD4D # $3d = tree tile; $52 = grass tile
+GYM_3_LOCK_ADDR = 0XD773 #hours of my life wasted, first bit is second lock second bit is first lock
 
 # #Trainer Moves/PP counter if 00 then no move is present
 # P1MOVES = [0xD173, 0xD174, 0xD175, 0xD176]
@@ -59,6 +60,19 @@ MOVE1PP = [0xD188, 0xD1B4, 0xD1E0, 0xD20C, 0xD238, 0xD264]
 MOVE2PP = [0xD189, 0xD1B5, 0xD1E1, 0xD20D, 0xD239, 0xD265]
 MOVE3PP = [0xD18A, 0xD1B6, 0xD1E2, 0xD20E, 0xD23A, 0xD266]
 MOVE4PP = [0xD18B, 0xD1B7, 0xD1E3, 0xD20F, 0xD23B, 0xD267]
+
+
+WILD_ENCOUNTER_RATE_ADDR = 0xD887
+
+COMMON_BATTLE_LEVEL_ADDRS = [0xD888, 0xD88A, 0xD88C, 0xD88E]
+COMMON_BATTLE_POKEMON_ADDRS = [0xD889, 0xD88B, 0xD88D, 0xD88F]
+
+UNCOMMON_BATTLE_LEVEL_ADDRS = [0xD890, 0xD892, 0xD894, 0xD896]
+UNCOMMON_BATTLE_POKEMON_ADDRS = [0xD891, 0xD893, 0xD895, 0xD897]
+
+RARE_BATTLE_LEVEL_ADDRS = [0xD898, 0xD89A]
+RARE_BATTLE_POKEMON_ADDRS = [0xD899, 0xD89B]
+
 
 items_dict = {
     1: {'decimal': 1, 'hex': '0x01', 'Item': 'Master Ball'},
@@ -1442,6 +1456,14 @@ moves_dict = {
     165: {"Move": 'Struggle', 'Type': 'Normal', 'Category': 'Physical', 'Power': 1, 'PP': 50}
 }
 
+def get_gym_3_lock_1(game):
+    return read_bit(game, 1, GYM_3_LOCK_ADDR)
+    
+def get_gym_3_lock_2(game):
+    return read_bit(game, 0, GYM_3_LOCK_ADDR)
+
+
+
 def bcd(num):
     return 10 * ((num >> 4) & 0x0F) + (num & 0x0F)
 
@@ -1591,6 +1613,37 @@ def money(game):
         + 100 * bcd(game.get_memory_value(MONEY_ADDR_100))
         + bcd(game.get_memory_value(MONEY_ADDR_10000))
     )
+
+def get_pokeball_count(game):
+    # List of Pokeball IDs
+    pb_ids = [0x01, 0x02, 0x03, 0x04]
+    # Get all items with their quantities from the bag
+    items = get_items_in_bag_q(game)
+    total_pb_cnt = 0
+
+    # Iterate over the items list two steps at a time to get ID and its quantity
+    for i in range(0, len(items), 2):
+        item_id = items[i]
+        quantity = items[i + 1] if i + 1 < len(items) else 0  # Guard against index out of range
+
+        # If the current item ID is a Pokeball, add its quantity to the total count
+        if item_id in pb_ids:
+            total_pb_cnt += quantity
+
+    return total_pb_cnt
+
+def get_items_in_bag_q(game, one_indexed=0):
+    first_item = 0xD31E
+    item_ids = []
+    # Assuming each item and its quantity occupy 2 consecutive memory slots
+    for i in range(0, 40, 2):  # Adjust the range if there are more than 20 items
+        item_id = game.get_memory_value(first_item + i)
+        if item_id == 0 or item_id == 0xFF:  # Check if the item slot is empty or end of list marker
+            break
+        quantity = game.get_memory_value(first_item + i + 1)  # Quantity is next to the ID
+        item_ids.extend([item_id + one_indexed, quantity])  # Append both ID and quantity
+
+    return item_ids
 
 def badges(game):
     badges = game.get_memory_value(BADGE_1_ADDR)

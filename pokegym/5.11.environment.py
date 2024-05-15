@@ -1733,7 +1733,7 @@ class Environment(Base):
             self.hm_count = 1
         self.hm_reward = hm_count * 10
 
-    def get_cut_reward(self): #Rewards Having Cut
+    def get_cut_reward(self):
         self.cut_reward = self.cut * 10 # 8  # 10 works - 2 might be better, though
 
     def get_tree_distance_reward(self, r, c, map_n):
@@ -2055,7 +2055,7 @@ class Environment(Base):
 
 
 
-    def reset(self, seed=None, options=None, max_episode_steps=20480, reward_scale = 4):
+    def reset(self, seed=None, options=None, max_episode_steps=20480, reward_scale=4.0):
         """Resets the game. Seeding is NOT supported"""
         # BET ADDED
         # # Logic for loading envs based off % milestone achievement
@@ -2494,313 +2494,14 @@ class Environment(Base):
             # print(f'\ntotal_sum={total_sum}\n')
             
         return self.render(), reward, done, done, info
-    def base_rewards(self):
-        reward = ( 
-                self.pokeball_rewards
-                + self.event_reward 
-                + self.caught_pokemon_reward * 2
-                + self.moves_obtained_reward        
-                + self.level_reward  
-                + self.healing_reward
-                + self.exploration_reward
+    
+    def calculate_reward(self):
+        if self.badges == 0 and self.reset_count > 15: 
+            if max(self.get_party_levels()) < 1: # not in use Set to 1 for Quick Disable # or np.sum(self.caught_pokemon) < 4: #Let's hide in the wood and kill boars
+				 
+                
+                self.reward = self.reward_scale * (
                 + self.pokeball_rewards
-                + self.seen_pokemon_reward
-                + self.len_respawn_reward
-                + self.badges_reward
-        )
-        return reward
-    def all_bill_rewards(self):
-        reward = (
-                + self.bill_capt_reward
-                + self.bill_reward  
-        )
-        return reward
-    def use_cut_rewards(self):
-        reward = (
-                + self.novel_menu_reward
-                #+ self.that_guy_reward / 2
-                + self.cut_coords_reward
-                + self.cut_tiles_reward
-                + self.tree_distance_reward * 0.6
-        
-        )
-    def get_cut_rewards(self):
-        reward = (
-                + self.hm_reward
-                + self.cut_reward     
-        )
-        return reward
-    def all_gym3_rewards(self):
-        reward = (
-                + self.can_reward
-                + self.lock_1_use_reward
-                + self.gym3_lock_piq
-        
-        )
-        return reward
-    
-    def breadcrumb_to_gym_2(self):
-        reward = (
-                + (ram_map.map_n(self.game) == 12) # Route 1
-                + (ram_map.map_n(self.game) == 1) * 2 #Veridian and Buildings
-                + (ram_map.map_n(self.game) == 41) * 2 
-                + (ram_map.map_n(self.game) == 42) * 2
-                + (ram_map.map_n(self.game) == 43) * 2
-                + (ram_map.map_n(self.game) == 44) * 2
-                + (ram_map.map_n(self.game) == 45) * 2
-                + (ram_map.map_n(self.game) == 13) * 2# Route 2
-                + (ram_map.map_n(self.game) == 50) * 2# Southgate
-                + (ram_map.map_n(self.game) == 51) * 3# Forest
-                + (ram_map.map_n(self.game) == 47) * 3 # Northgate
-            
-                + (ram_map.map_n(self.game) == 2) * 4 #Pewter City 
-					            
-                #Pewter Buildings and Gym (34,35,36,37,38,39,3A)
-                + (ram_map.map_n(self.game) == 52) * 4
-                + (ram_map.map_n(self.game) == 53) * 4
-                + (ram_map.map_n(self.game) == 54) * 4
-                + (ram_map.map_n(self.game) == 55) * 4
-                + (ram_map.map_n(self.game) == 56) * 4
-                + (ram_map.map_n(self.game) == 57) * 4
-                + (ram_map.map_n(self.game) == 58) * 4
-                #Route 3 + buildings and Mt Moon first level
-                + (ram_map.map_n(self.game) == 14) * 5# Route 3
-                + (ram_map.map_n(self.game) == 68) * 6# Mt Moon Pokecenter
-                + (ram_map.map_n(self.game) == 59) * 6# Mt Moon First Map
-                + (ram_map.map_n(self.game) == 60) * 6# Mt Moon Hallways
-                + (ram_map.map_n(self.game) == 61) * 6# Mt Moon Second Map
-                + (ram_map.map_n(self.game) == 15) * 6# Route 4 Small Part of this is outside Mt Moon on other side
-                + (ram_map.map_n(self.game) == 3) * 11# Cerulean Big Bonus for Navigating Cave
-                #Cerulean Buildings Pre Bill: Badge House, Trade House, Mart, Pokecenter, Gym, Bikeshop (In wrong order): E6, 3F, 40, 41, 42, 43
-                #+ (ram_map.map_n(self.game) == 230) * 11   disabled to not get trapped
-                + (ram_map.map_n(self.game) == 62) * 11
-                + (ram_map.map_n(self.game) == 63) * 11
-                + (ram_map.map_n(self.game) == 64) * 11
-                
-                + (ram_map.map_n(self.game) == 66) * 11
-                + (ram_map.map_n(self.game) == 67) * 11
-                + (ram_map.map_n(self.game) == 65) * 12 #Gym 2
-        
-        )
-        return reward
-
-    def breadcrumb_to_cerulean_pokecenter(self):
-        reward = (
-                + (ram_map.map_n(self.game) == 12) # Route 1
-                + (ram_map.map_n(self.game) == 1) * 2 #Veridian and Buildings
-                + (ram_map.map_n(self.game) == 41) * 2 
-                + (ram_map.map_n(self.game) == 42) * 2
-                + (ram_map.map_n(self.game) == 43) * 2
-                + (ram_map.map_n(self.game) == 44) * 2
-                + (ram_map.map_n(self.game) == 45) * 2
-                + (ram_map.map_n(self.game) == 13) * 2# Route 2
-                + (ram_map.map_n(self.game) == 50) * 2# Southgate
-                + (ram_map.map_n(self.game) == 51) * 3# Forest
-                + (ram_map.map_n(self.game) == 47) * 3 # Northgate
-            
-                + (ram_map.map_n(self.game) == 2) * 4 #Pewter City 
-					            
-                #Pewter Buildings and Gym (34,35,36,37,38,39,3A)
-                + (ram_map.map_n(self.game) == 52) * 4
-                + (ram_map.map_n(self.game) == 53) * 4
-                + (ram_map.map_n(self.game) == 54) * 4
-                + (ram_map.map_n(self.game) == 55) * 4
-                + (ram_map.map_n(self.game) == 56) * 4
-                + (ram_map.map_n(self.game) == 57) * 4
-                + (ram_map.map_n(self.game) == 58) * 4
-                #Route 3 + buildings and Mt Moon first level
-                + (ram_map.map_n(self.game) == 14) * 5# Route 3
-                + (ram_map.map_n(self.game) == 68) * 6# Mt Moon Pokecenter
-                + (ram_map.map_n(self.game) == 59) * 6# Mt Moon First Map
-                + (ram_map.map_n(self.game) == 60) * 6# Mt Moon Hallways
-                + (ram_map.map_n(self.game) == 61) * 6# Mt Moon Second Map
-                + (ram_map.map_n(self.game) == 15) * 6# Route 4 Small Part of this is outside Mt Moon on other side
-                + (ram_map.map_n(self.game) == 3) * 11# Cerulean Big Bonus for Navigating Cave
-                #Cerulean Pokecenter
-                + (ram_map.map_n(self.game) == 64) * 13
-        
-        )
-        return reward
-    
-    def breadcrumb_to_bill(self):
-        reward = (
-                + (ram_map.map_n(self.game) == 12) # Route 1
-                + (ram_map.map_n(self.game) == 1) * 2 #Veridian and Buildings
-                + (ram_map.map_n(self.game) == 41) * 2 
-                + (ram_map.map_n(self.game) == 42) * 2
-                + (ram_map.map_n(self.game) == 43) * 2
-                + (ram_map.map_n(self.game) == 44) * 2
-                + (ram_map.map_n(self.game) == 45) * 2
-                + (ram_map.map_n(self.game) == 13) * 2# Route 2
-                + (ram_map.map_n(self.game) == 50) * 2# Southgate
-                + (ram_map.map_n(self.game) == 51) * 3# Forest
-                + (ram_map.map_n(self.game) == 47) * 3 # Northgate
-            
-                + (ram_map.map_n(self.game) == 2) * 4 #Pewter City 
-					            
-                #Pewter Buildings and Gym (34,35,36,37,38,39,3A)
-                + (ram_map.map_n(self.game) == 52) * 4
-                + (ram_map.map_n(self.game) == 53) * 4
-                + (ram_map.map_n(self.game) == 54) * 4
-                + (ram_map.map_n(self.game) == 55) * 4
-                + (ram_map.map_n(self.game) == 56) * 4
-                + (ram_map.map_n(self.game) == 57) * 4
-                + (ram_map.map_n(self.game) == 58) * 4
-                #Route 3 + buildings and Mt Moon first level
-                + (ram_map.map_n(self.game) == 14) * 5# Route 3
-                + (ram_map.map_n(self.game) == 68) * 6# Mt Moon Pokecenter
-                + (ram_map.map_n(self.game) == 59) * 6# Mt Moon First Map
-                + (ram_map.map_n(self.game) == 60) * 6# Mt Moon Hallways
-                + (ram_map.map_n(self.game) == 61) * 6# Mt Moon Second Map
-                + (ram_map.map_n(self.game) == 15) * 6# Route 4 Small Part of this is outside Mt Moon on other side
-                + (ram_map.map_n(self.game) == 3) * 12# Cerulean Big Bonus for Navigating Cave
-                #Cerulean Buildings Pre Bill: Badge House, Trade House, Mart, Pokecenter, Gym, Bikeshop (In wrong order): E6, 3F, 40, 41, 42, 43
-                # + (ram_map.map_n(self.game) == 230) * 11 Disabled to not get trapped
-                + (ram_map.map_n(self.game) == 63) * 11
-                + (ram_map.map_n(self.game) == 64) * 12 #pokecenter
-                + (ram_map.map_n(self.game) == 62) * 12
-                
-                + (ram_map.map_n(self.game) == 66) * 11
-               #  + (ram_map.map_n(self.game) == 67) * 12 #mart Disabled
-                + (ram_map.map_n(self.game) == 65) * 10 #Gym 2 we want to leave
-                #Route 24, 25, Bill's House
-                + (ram_map.map_n(self.game) == 35) * 13
-                + (ram_map.map_n(self.game) == 36) * 13
-                + (ram_map.map_n(self.game) == 88) * 15
-        
-        )
-        return reward
-
-    def breadcrumb_to_SS_Anne(self):
-        reward = (
-                + (ram_map.map_n(self.game) == 12) # Route 1
-                + (ram_map.map_n(self.game) == 1) * 2 #Veridian and Buildings
-                + (ram_map.map_n(self.game) == 41) * 2 
-                + (ram_map.map_n(self.game) == 42) * 2
-                + (ram_map.map_n(self.game) == 43) * 2
-                + (ram_map.map_n(self.game) == 44) * 2
-                + (ram_map.map_n(self.game) == 45) * 2
-                + (ram_map.map_n(self.game) == 13) * 2# Route 2
-                + (ram_map.map_n(self.game) == 50) * 2# Southgate
-                + (ram_map.map_n(self.game) == 51) * 3# Forest
-                + (ram_map.map_n(self.game) == 47) * 3 # Northgate
-            
-                + (ram_map.map_n(self.game) == 2) * 4 #Pewter City 
-					            
-                #Pewter Buildings and Gym (34,35,36,37,38,39,3A)
-                + (ram_map.map_n(self.game) == 52) * 4
-                + (ram_map.map_n(self.game) == 53) * 4
-                + (ram_map.map_n(self.game) == 54) * 4
-                + (ram_map.map_n(self.game) == 55) * 4
-                + (ram_map.map_n(self.game) == 56) * 4
-                + (ram_map.map_n(self.game) == 57) * 4
-                + (ram_map.map_n(self.game) == 58) * 4
-                #Route 3 + buildings and Mt Moon first level
-                + (ram_map.map_n(self.game) == 14) * 5# Route 3
-                + (ram_map.map_n(self.game) == 68) * 6# Mt Moon Pokecenter
-                + (ram_map.map_n(self.game) == 59) * 6# Mt Moon First Map
-                + (ram_map.map_n(self.game) == 60) * 6# Mt Moon Hallways
-                + (ram_map.map_n(self.game) == 61) * 6# Mt Moon Second Map
-                + (ram_map.map_n(self.game) == 15) * 6# Route 4 Small Part of this is outside Mt Moon on other side
-            
-            
-
-                #Route 24, 25, Bill's House
-                + (ram_map.map_n(self.game) == 35) * 15
-                + (ram_map.map_n(self.game) == 36) * 15
-                + (ram_map.map_n(self.game) == 88) * 13 #Bills
-            
-                + (ram_map.map_n(self.game) == 3) * 16# We're Back!
-                #Cerulean Buildings Pre Bill: Badge House, Trade House, Mart, Pokecenter, Gym, Bikeshop (In wrong order): E6, 3F, 40, 41, 42, 43
-                # + (ram_map.map_n(self.game) == 230) * 11 Disabled to not get trapped
-                + (ram_map.map_n(self.game) == 63) * 11
-                + (ram_map.map_n(self.game) == 64) * 16 #pokecenter
-                
-                + (ram_map.map_n(self.game) == 66) * 11
-                + (ram_map.map_n(self.game) == 62) * 16 #trashed house
-                # + (ram_map.map_n(self.game) == 67) * 16 #mart Disabled
-                + (ram_map.map_n(self.game) == 65) * 11 #Gym 2
-                
-                + (ram_map.map_n(self.game) == 16) * 17# Route 5 
-                + (ram_map.map_n(self.game) == 72) * 17 #Pokemon Daycare
-                + (ram_map.map_n(self.game) == 71) * 18 #Enter Underground Path
-                + (ram_map.map_n(self.game) == 119) * 19 #Underground Path
-                + (ram_map.map_n(self.game) == 74) * 20 # Exit Underground Path
-                + (ram_map.map_n(self.game) == 17) * 21 #Route 6
-                + (ram_map.map_n(self.game) == 5) * 22 #VERMILION CITY
-                + (ram_map.map_n(self.game) == 89) * 23 #VERMILION CITY Pokegym
-            #todo continue to ss anne
-
-        
-        )
-        return reward
-    
-    def breadcrumb_to_vermilion_pokecenter(self):
-        reward = (
-                + (ram_map.map_n(self.game) == 12) # Route 1
-                + (ram_map.map_n(self.game) == 1) * 2 #Veridian and Buildings
-                + (ram_map.map_n(self.game) == 41) * 2 
-                + (ram_map.map_n(self.game) == 42) * 2
-                + (ram_map.map_n(self.game) == 43) * 2
-                + (ram_map.map_n(self.game) == 44) * 2
-                + (ram_map.map_n(self.game) == 45) * 2
-                + (ram_map.map_n(self.game) == 13) * 2# Route 2
-                + (ram_map.map_n(self.game) == 50) * 2# Southgate
-                + (ram_map.map_n(self.game) == 51) * 3# Forest
-                + (ram_map.map_n(self.game) == 47) * 3 # Northgate
-            
-                + (ram_map.map_n(self.game) == 2) * 4 #Pewter City 
-					            
-                #Pewter Buildings and Gym (34,35,36,37,38,39,3A)
-                + (ram_map.map_n(self.game) == 52) * 4
-                + (ram_map.map_n(self.game) == 53) * 4
-                + (ram_map.map_n(self.game) == 54) * 4
-                + (ram_map.map_n(self.game) == 55) * 4
-                + (ram_map.map_n(self.game) == 56) * 4
-                + (ram_map.map_n(self.game) == 57) * 4
-                + (ram_map.map_n(self.game) == 58) * 4
-                #Route 3 + buildings and Mt Moon first level
-                + (ram_map.map_n(self.game) == 14) * 5# Route 3
-                + (ram_map.map_n(self.game) == 68) * 6# Mt Moon Pokecenter
-                + (ram_map.map_n(self.game) == 59) * 6# Mt Moon First Map
-                + (ram_map.map_n(self.game) == 60) * 6# Mt Moon Hallways
-                + (ram_map.map_n(self.game) == 61) * 6# Mt Moon Second Map
-                + (ram_map.map_n(self.game) == 15) * 6# Route 4 Small Part of this is outside Mt Moon on other side
-            
-            
-
-                #Route 24, 25, Bill's House
-                + (ram_map.map_n(self.game) == 35) * 15
-                + (ram_map.map_n(self.game) == 36) * 15
-                + (ram_map.map_n(self.game) == 88) * 13 #Bills
-            
-                + (ram_map.map_n(self.game) == 3) * 16# We're Back!
-                #Cerulean Buildings Pre Bill: Badge House, Trade House, Mart, Pokecenter, Gym, Bikeshop (In wrong order): E6, 3F, 40, 41, 42, 43
-                # + (ram_map.map_n(self.game) == 230) * 11 #disabled to not get trapped
-                + (ram_map.map_n(self.game) == 63) * 11
-                + (ram_map.map_n(self.game) == 64) * 16 #pokecenter
-               
-                + (ram_map.map_n(self.game) == 66) * 11
-                + (ram_map.map_n(self.game) == 62) * 16 #trashed house
-                # + (ram_map.map_n(self.game) == 67) * 16 #mart Disabled
-                + (ram_map.map_n(self.game) == 65) * 11 #Gym 2
-                
-                + (ram_map.map_n(self.game) == 16) * 17# Route 5 
-                + (ram_map.map_n(self.game) == 72) * 17 #Pokemon Daycare
-                + (ram_map.map_n(self.game) == 71) * 18 #Enter Underground Path
-                + (ram_map.map_n(self.game) == 119) * 19 #Underground Path
-                + (ram_map.map_n(self.game) == 74) * 20 # Exit Underground Path
-                + (ram_map.map_n(self.game) == 17) * 21 #Route 6
-                + (ram_map.map_n(self.game) == 5) * 22 #VERMILION CITY
-                + (ram_map.map_n(self.game) == 89) * 25 #VERMILION CITY Pokecenter
-           
-
-        
-        )
-        return reward  
-    
-    def breadcrumb_to_veridian_forest(self):
-        reward = (
                 + (ram_map.map_n(self.game) == 12) # Route 1
                 + (ram_map.map_n(self.game) == 1) * 2 #Veridian and Buildings
                 + (ram_map.map_n(self.game) == 41) * 2 
@@ -2811,12 +2512,21 @@ class Environment(Base):
                 + (ram_map.map_n(self.game) == 13) * 2# Route 2
                 + (ram_map.map_n(self.game) == 50) * 2# Southgate
                 + (ram_map.map_n(self.game) == 51) * 2# Forest
-        )
-        return reward
-    
-    def breadcrumb_to_gym_1(self):
-        reward = (
-            	+ (ram_map.map_n(self.game) == 12) # Route 1
+                + self.event_reward 
+                + self.caught_pokemon_reward * 5
+                + self.moves_obtained_reward        
+                + self.level_reward  
+                + self.healing_reward
+                + self.exploration_reward    
+            )
+            else:
+				   
+               
+				
+                self.reward = self.reward_scale * (
+                + 5
+                + self.pokeball_rewards
+	            + (ram_map.map_n(self.game) == 12) # Route 1
                 + (ram_map.map_n(self.game) == 1) * 2 #Veridian and Buildings
                 + (ram_map.map_n(self.game) == 41) * 2 
                 + (ram_map.map_n(self.game) == 42) * 2
@@ -2839,12 +2549,65 @@ class Environment(Base):
                 + (ram_map.map_n(self.game) == 57) * 4
                 + (ram_map.map_n(self.game) == 58) * 4
                 + (ram_map.map_n(self.game) == 54) * 5 #Gym 1
-        
-        )
-        return reward
-    
-    def breadcrumb_to_mt_moon(self):
-        reward = (
+                + self.event_reward * 2
+                + self.caught_pokemon_reward * 2
+                + self.moves_obtained_reward        
+                + self.level_reward  
+                + self.badges_reward
+                + self.healing_reward
+                + self.exploration_reward      #In use
+            )				   
+        elif self.badges == 0 and self.reset_count <= 15: 
+            if ram_map.mem_val(self.game, 0xD719) == 0: #Let's see if we can teach the AI how to save and heal
+				 
+                
+                self.reward = self.reward_scale * (
+                + 5 #current reward 
+                + self.pokeball_rewards
+                + (ram_map.map_n(self.game) == 41) * 2 #PokeCenter
+                + self.event_reward 
+                + self.caught_pokemon_reward * 5
+                + self.moves_obtained_reward        
+                + self.level_reward  
+                + self.healing_reward
+                + self.exploration_reward    
+            )
+            elif ram_map.mem_val(self.game, 0xD719) == 1: #Let's see if we can teach the AI how to save and heal
+				 
+                
+                self.reward = self.reward_scale * (
+                + 7 #current reward + 2 points for saving
+                + self.pokeball_rewards
+                + (ram_map.map_n(self.game) == 58) * 2 #PokeCenter 2
+                + self.event_reward 
+                + self.caught_pokemon_reward * 5
+                + self.moves_obtained_reward        
+                + self.level_reward  
+                + self.healing_reward
+                + self.exploration_reward    
+            )
+            else: #Let's try and learn to play the game maybe update this to learn to buy pokeballs
+				   
+               
+				
+                self.reward = self.reward_scale * (
+                + 9 #points for learning to save
+                + self.pokeball_rewards
+                + self.event_reward * 2
+                + self.caught_pokemon_reward * 2
+                + self.moves_obtained_reward        
+                + self.level_reward  
+                + self.badges_reward
+                + self.healing_reward
+                + self.exploration_reward    
+            )		
+        elif self.badges == 1: # and self.reset_count > 25: #disabled for now 
+            if max(self.get_party_levels()) < 1:#Set to 1 for Quick Disable # or np.sum(self.caught_pokemon) < 7: #Let's hide in the wood and kill boars
+				 
+                
+                self.reward = self.reward_scale * (
+                + 15
+                + self.pokeball_rewards
                 + (ram_map.map_n(self.game) == 12) # Route 1
                 + (ram_map.map_n(self.game) == 1) * 2 #Veridian and Buildings
                 + (ram_map.map_n(self.game) == 41) * 2 
@@ -2869,14 +2632,19 @@ class Environment(Base):
                 + (ram_map.map_n(self.game) == 14) * 4# Route 3
                 + (ram_map.map_n(self.game) == 15) * 4# Route 4 a small piece of this is on the Veridian side
                 + (ram_map.map_n(self.game) == 68) * 4# Mt Moon Pokecenter
-                + (ram_map.map_n(self.game) == 59) * 4# Mt Moon First Map	
-        
-        )
-        return reward
-    
-    
-    def breadcrumb_to_mt_moon_pokecenter(self):
-        reward = (
+                + (ram_map.map_n(self.game) == 59) * 4# Mt Moon First Map				
+                + self.event_reward * 2
+                + self.caught_pokemon_reward * 5
+                + self.moves_obtained_reward        
+                + self.level_reward  
+                + self.healing_reward
+                + self.exploration_reward    
+            )
+            else:
+				   
+                #if ram_map.read_bit(self.game, 0xD7F3, 2) != 1: #First Viridian Forest Trainer, Needed because we return to route 2 after forest
+                self.reward = self.reward_scale * (
+                + 20
                 + (ram_map.map_n(self.game) == 12) # Route 1
                 + (ram_map.map_n(self.game) == 1) * 2 #Veridian and Buildings
                 + (ram_map.map_n(self.game) == 41) * 2 
@@ -2886,128 +2654,111 @@ class Environment(Base):
                 + (ram_map.map_n(self.game) == 45) * 2
                 + (ram_map.map_n(self.game) == 13) * 2# Route 2
                 + (ram_map.map_n(self.game) == 50) * 2# Southgate
-                + (ram_map.map_n(self.game) == 51) * 4# Forest
-                + (ram_map.map_n(self.game) == 47) * 4 # Northgate
-                + (ram_map.map_n(self.game) == 2) * 4 #Pewter City           
+                + (ram_map.map_n(self.game) == 51) * 3# Forest
+                + (ram_map.map_n(self.game) == 47) * 3 # Northgate
+            
+                + (ram_map.map_n(self.game) == 2) * 4 #Pewter City 
+					            
                 #Pewter Buildings and Gym (34,35,36,37,38,39,3A)
                 + (ram_map.map_n(self.game) == 52) * 4
                 + (ram_map.map_n(self.game) == 53) * 4
-                + (ram_map.map_n(self.game) == 54) * 4 #The Gym
+                + (ram_map.map_n(self.game) == 54) * 4
                 + (ram_map.map_n(self.game) == 55) * 4
                 + (ram_map.map_n(self.game) == 56) * 4
                 + (ram_map.map_n(self.game) == 57) * 4
                 + (ram_map.map_n(self.game) == 58) * 4
                 #Route 3 + buildings and Mt Moon first level
-                + (ram_map.map_n(self.game) == 14) * 4# Route 3
-                + (ram_map.map_n(self.game) == 15) * 5# Route 4 a small piece of this is on the Pewter side
+                + (ram_map.map_n(self.game) == 14) * 5# Route 3
                 + (ram_map.map_n(self.game) == 68) * 6# Mt Moon Pokecenter
-
-        
-        )
-        return reward
-    
-    def calculate_reward(self):
-        if self.badges == 0 and self.reset_count > 15: 
-            if max(self.get_party_levels()) < 1: # not in use Set to 1 for Quick Disable # or np.sum(self.caught_pokemon) < 4: #Let's hide in the wood and kill boars  
-                self.reward = self.reward_scale * (
-                + self.breadcrumb_to_veridian_forest()
-                + self.base_rewards()  
-            )
-            else:
-                self.reward = self.reward_scale * (
-                + 5
-                + self.breadcrumb_to_gym_1()
-                + self.base_rewards()
-            )				   
-        elif self.badges == 0 and self.reset_count <= 15: 
-            if ram_map.mem_val(self.game, 0xD719) == 0: #Let's see if we can teach the AI how to save and heal   
-                self.reward = self.reward_scale * (
-                + 5 #current reward 
-                + (ram_map.map_n(self.game) == 41) * 2 #PokeCenter
-                + self.base_rewards()
-            )
-            elif ram_map.mem_val(self.game, 0xD719) == 1: #Let's see if we can teach the AI how to save and heal
-                self.reward = self.reward_scale * (
-                + 7 #current reward + 2 points for saving
-                + (ram_map.map_n(self.game) == 58) * 2 #PokeCenter 2
-                + self.base_rewards()  
-            )
-            else: #Let's try and learn to play the game maybe update this to learn to buy pokeballs
-                self.reward = self.reward_scale * (
-                + 9 #points for learning to save
-                + self.base_rewards()
-            )		
-        elif self.badges == 1: # and self.reset_count > 25: #disabled for now 
-            if max(self.get_party_levels()) < 1:#Set to 1 for Quick Disable # or np.sum(self.caught_pokemon) < 7: #Let's hide in the wood and kill boars 
-                self.reward = self.reward_scale * (
-                + 15			
-                + self.base_rewards()
-                + self.breadcrumb_to_mt_moon()
-            )
-            elif ram_map.mem_val(self.game, 0xD719) <= 2:
-                self.reward = self.reward_scale * (
-                + 15			
-                + self.base_rewards()
-                + self.breadcrumb_to_mt_moon_pokecenter()
-            )
-            elif ram_map.mem_val(self.game, 0xD719) != 3 and ram_map.mem_val(self.game, 0xD719) != 5:
-                self.reward = self.reward_scale * (
-                + 17			
-                + self.base_rewards()
-                + self.breadcrumb_to_cerulean_pokecenter()
-            )
-            else:   
-                #if ram_map.read_bit(self.game, 0xD7F3, 2) != 1: #First Viridian Forest Trainer, Needed because we return to route 2 after forest
-                self.reward = self.reward_scale * (
-                + 20
-                + self.breadcrumb_to_gym_2()
-                + self.base_rewards()
+                + (ram_map.map_n(self.game) == 59) * 6# Mt Moon First Map
+                + (ram_map.map_n(self.game) == 60) * 6# Mt Moon Hallways
+                + (ram_map.map_n(self.game) == 61) * 6# Mt Moon Second Map
+                + (ram_map.map_n(self.game) == 15) * 6# Route 4 Small Part of this is outside Mt Moon on other side
+                + (ram_map.map_n(self.game) == 3) * 11# Cerulean Big Bonus for Navigating Cave
+                #Cerulean Buildings Pre Bill: Badge House, Trade House, Mart, Pokecenter, Gym, Bikeshop (In wrong order): E6, 3F, 40, 41, 42, 43
+                + (ram_map.map_n(self.game) == 230) * 11
+                + (ram_map.map_n(self.game) == 63) * 11
+                + (ram_map.map_n(self.game) == 64) * 11
+                + (ram_map.map_n(self.game) == 65) * 11
+                + (ram_map.map_n(self.game) == 66) * 11
+                + (ram_map.map_n(self.game) == 67) * 11
+                + (ram_map.map_n(self.game) == 65) * 12 #Gym 2
+                
+					
+                + self.event_reward * 3
+                + self.caught_pokemon_reward * 2
+                + self.moves_obtained_reward        
+                + self.level_reward  
+                + self.badges_reward
+                + self.healing_reward
+                + self.exploration_reward     #In use
             )	
         elif self.badges == 2: # We Need to subdevide this for each nmap and define objectives top of head is bill stuff, beat gym2 get cut
             if self.bill_state < 1: #Objective is get SS Anne Ticket
                 self.reward = self.reward_scale * (
-                + 25 #NOTHING REMOVED THIS STILL SHOULDN'T BE NEEDED
-                + self.all_bill_rewards()
-                + self.base_rewards()
-                + self.breadcrumb_to_bill()
-
-            )    
-         
+                + self.pokeball_rewards
+                + 35 #NOTHING REMOVED THIS STILL SHOULDN'T BE NEEDED
+                + self.event_reward * 4
+                + self.bill_capt_reward
+                + self.caught_pokemon_reward * 5
+                + self.moves_obtained_reward
+                + self.bill_reward
+                + self.level_reward
+                + self.badges_reward
+                + self.healing_reward
+                + self.exploration_reward
+            ) 
                 
             elif self.bill_state > 0 and self.cut < 1 : #Objective is learn cut 
-                if ram_map.mem_val(self.game, 0xD719) != 5:
-                    self.reward = self.reward_scale * (
-                    + 25 #NOTHING REMOVED THIS STILL SHOULDN'T BE NEEDED
-                    + self.all_bill_rewards()
-                    + self.base_rewards()
-                    + ram_map.read_bit(self.game, 0xD7F3, 2) * 5
-                    + self.breadcrumb_to_vermilion_pokecenter()
-
-                )   
-                    #todo get the bike
-                else:
-                
-                    self.reward = self.reward_scale * (
-                    + (ram_map.map_n(self.game) == 101) * 10 #we no want to leave captains room until we learn cut
-                    + 50 #NOTHING REMOVED THIS STILL SHOULDN'T BE NEEDED
-                    + self.all_bill_rewards()
-                    #+ self.used_cut_reward    why is this here?  Make sure not needed
-                    + self.get_cut_rewards()
-                    + self.base_rewards()
+                self.reward = self.reward_scale * (
+                + self.pokeball_rewards
+                + (ram_map.map_n(self.game) == 101) * 5 #we no want to leave captains room until we learn cut
+                + 40 #NOTHING REMOVED THIS STILL SHOULDN'T BE NEEDED
+                + self.event_reward * 5
+                + self.bill_capt_reward
+                + self.caught_pokemon_reward * 5
+                + self.moves_obtained_reward
+                + self.bill_reward
+                + self.used_cut_reward
+                + self.hm_reward
+                + self.level_reward
+                + self.badges_reward
+                + self.healing_reward
+                + self.exploration_reward
+                + self.cut_reward
      
             )
             elif self.bill_state > 0 and self.cut > 0 : #Objective is beat gym3 
                 self.reward = self.reward_scale * (
-                + 100 #Potentially Needed to ofset leaving captains room and replace Bill Rewards
-                + (ram_map.map_n(self.game) == 5) * 10 #stay in the area
-                + (ram_map.map_n(self.game) == 89) #Pokecenter incase we want to heal
-                + (ram_map.map_n(self.game) == 92) * 20 #stay in the gym until we beat it
+                + self.pokeball_rewards
+                + 90 #Potentially Needed to ofset leaving captains room and replace Bill Rewards
+                + (ram_map.map_n(self.game) == 5) * 5 #stay in the area
+                + (ram_map.map_n(self.game) == 92) * 10 #stay in the gym until we beat it
+                + self.event_reward * 5
+                + self.caught_pokemon_reward * 5
+                + self.moves_obtained_reward
                 + self.used_cut_reward
-                + self.base_rewards()
-                + self.get_cut_rewards()
-                + self.use_cut_rewards()
-                + self.all_gym3_rewards()
-        )    
+                + self.hm_reward
+                + self.level_reward
+                + self.death_reward
+                + self.badges_reward
+                + self.healing_reward
+                + self.exploration_reward
+                + self.cut_reward
+                + self.novel_menu_reward
+                #+ self.that_guy_reward / 2
+                + self.cut_coords_reward
+                + self.cut_tiles_reward
+                + self.tree_distance_reward * 0.6
+                + self.can_reward
+                + self.len_respawn_reward
+                + self.lock_1_use_reward
+                + self.gym3_lock_piq       
+        )
+                            
+            
+            
+            
         elif self.badges == 3: #todo
             self.reward = self.reward_scale * (
             + self.pokeball_rewards
@@ -3027,6 +2778,7 @@ class Environment(Base):
             + self.exploration_reward
             + self.cut_reward
             + self.novel_menu_reward
+            #+ self.that_guy_reward / 2
             + self.cut_coords_reward
             + self.cut_tiles_reward
             + self.tree_distance_reward * 0.6
@@ -3051,7 +2803,8 @@ class Environment(Base):
             + self.len_respawn_reward
             + self.lock_1_use_reward
             + self.celadon_tree_reward
-            + self.gym3_lock_piq    
+            + self.gym3_lock_piq 
+            
         )
         elif self.badges >= 3: #todo
             self.reward = self.reward_scale * (
@@ -3072,6 +2825,7 @@ class Environment(Base):
             + self.exploration_reward
             + self.cut_reward
             + self.novel_menu_reward
+            #+ self.that_guy_reward / 2
             + self.cut_coords_reward
             + self.cut_tiles_reward
             + self.tree_distance_reward * 0.6
@@ -3096,11 +2850,54 @@ class Environment(Base):
             + self.len_respawn_reward
             + self.lock_1_use_reward
             + self.celadon_tree_reward
-            + self.gym3_lock_piq   
+            + self.gym3_lock_piq 
+            
         )
         else: #default to something
             self.reward = self.reward_scale * ( #todo
-            + self.base_rewards()  
+            + self.pokeball_rewards
+            + self.event_reward * 5
+            + self.bill_capt_reward
+            + self.seen_pokemon_reward
+            + self.caught_pokemon_reward * 5
+            + self.moves_obtained_reward
+            + self.bill_reward
+            + self.used_cut_reward
+            + self.hm_reward
+            + self.level_reward
+            + self.death_reward
+            + self.badges_reward
+            + self.healing_reward
+            + self.exploration_reward
+            + self.cut_reward
+            + self.novel_menu_reward
+            #+ self.that_guy_reward / 2
+            + self.cut_coords_reward
+            + self.cut_tiles_reward
+            + self.tree_distance_reward * 0.6
+            + self.dojo_reward * 5
+            + self.hideout_reward * 5
+            + self.has_lemonade_in_bag_reward
+            + self.has_fresh_water_in_bag_reward
+            + self.has_soda_pop_in_bag_reward
+            + self.has_silph_scope_in_bag_reward
+            + self.has_lift_key_in_bag_reward
+            + self.has_pokedoll_in_bag_reward
+            + self.has_bicycle_in_bag_reward
+            + (self.dojo_events_reward + self.silph_co_events_reward +
+            self.hideout_events_reward + self.poke_tower_events_reward +
+            self.gym3_events_reward + self.gym4_events_reward +
+            self.gym5_events_reward + self.gym6_events_reward +
+            self.gym7_events_reward)
+            + (self.gym3_events_reward + self.gym4_events_reward +
+            self.gym5_events_reward + self.gym6_events_reward +
+            self.gym7_events_reward)
+            + self.can_reward
+            + self.len_respawn_reward
+            + self.lock_1_use_reward
+            + self.celadon_tree_reward
+            + self.gym3_lock_piq 
+            
         )
 
     
