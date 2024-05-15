@@ -1,11 +1,4 @@
 from pathlib import Path
-
-import sys
-current_dir = Path(__file__).parent
-pufferlib_dir = current_dir.parent.parent
-if str(pufferlib_dir) not in sys.path:
-    sys.path.append(str(pufferlib_dir))
-
 from pdb import set_trace as T
 import types
 import uuid
@@ -34,8 +27,8 @@ import subprocess
 import multiprocessing
 import time
 import random
-import math
-
+from multiprocessing import Manager
+from pokegym import data
 
 from pokegym.constants import *
 from pokegym.bin.ram_reader.red_ram_api import *
@@ -49,22 +42,8 @@ from pokegym.bin.ram_reader.red_ram_debug import *
 from enum import IntEnum
 from multiprocessing import Manager
 from .ram_addresses import RamAddress as RAM
-from stream_agent_wrapper import StreamWrapper
-import sys
-current_dir = Path(__file__).parent
-pufferlib_dir = current_dir.parent.parent
-if str(pufferlib_dir) not in sys.path:
-    sys.path.append(str(pufferlib_dir))
-import dill as pickle
-import datetime
-import dill
-import re
-from datetime import datetime
 
 
-CUT_GRASS_SEQ = deque([(0x52, 255, 1, 0, 1, 1), (0x52, 255, 1, 0, 1, 1), (0x52, 1, 1, 0, 1, 1)])
-CUT_FAIL_SEQ = deque([(-1, 255, 0, 0, 4, 1), (-1, 255, 0, 0, 1, 1), (-1, 255, 0, 0, 1, 1)])
-CUT_SEQ = [((0x3D, 1, 1, 0, 4, 1), (0x3D, 1, 1, 0, 1, 1)), ((0x50, 1, 1, 0, 4, 1), (0x50, 1, 1, 0, 1, 1)),]
 STATE_PATH = __file__.rstrip("environment.py") + "current_state/"
 CUT_GRASS_SEQ = deque([(0x52, 255, 1, 0, 1, 1), (0x52, 255, 1, 0, 1, 1), (0x52, 1, 1, 0, 1, 1)])
 CUT_FAIL_SEQ = deque([(-1, 255, 0, 0, 4, 1), (-1, 255, 0, 0, 1, 1), (-1, 255, 0, 0, 1, 1)])
@@ -103,81 +82,9 @@ TREE_POSITIONS_PIXELS = [
 TREE_POSITIONS_GRID_GLOBAL = [
     (y//16, x//16) for x, y, map_n in TREE_POSITIONS_PIXELS
 ]
-
-
-PLAY_STATE_PATH = __file__.rstrip("environment.py") + "just_died_mt_moon.state" # "outside_mt_moon_hp.state" # "Bulbasaur.state" # "celadon_city_cut_test.state"
-EXPERIMENTAL_PATH = __file__.rstrip("environment.py") + "celadon_city_cut_test.state"
-STATE_PATH = __file__.rstrip("environment.py") + "current_state/"
 # print(f'TREE_POSOTIONS_CONVERTED = {TREE_POSITIONS_GRID_GLOBAL}')
 MAPS_WITH_TREES = set(map_n for _, _, map_n in TREE_POSITIONS_PIXELS)
 TREE_COUNT_PER_MAP = {6: 2, 134: 3, 13: 5, 1: 2, 5: 1, 36: 1, 20: 1, 21: 4}
-
-# Testing environment w/ no AI
-# pokegym.play from pufferlib folder
-def play():
-    """Creates an environment and plays it"""
-    env = Environment(
-        rom_path="pokemon_red.gb",
-        state_path=EXPERIMENTAL_PATH,
-        headless=False,
-        disable_input=False,
-        sound=False,
-        sound_emulated=False,
-        verbose=True,
-    )
-
-    env = StreamWrapper(env, stream_metadata={"user": "localtesty |BET|\n"})
-
-    env.reset()
-    env.game.set_emulation_speed(0)
-
-    # Display available actions
-    print("Available actions:")
-    for idx, action in enumerate(ACTIONS):
-        print(f"{idx}: {action}")
-
-    # Create a mapping from WindowEvent to action index
-    window_event_to_action = {
-        "PRESS_ARROW_DOWN": 0,
-        "PRESS_ARROW_LEFT": 1,
-        "PRESS_ARROW_RIGHT": 2,
-        "PRESS_ARROW_UP": 3,
-        "PRESS_BUTTON_A": 4,
-        "PRESS_BUTTON_B": 5,
-        "PRESS_BUTTON_START": 6,
-        "PRESS_BUTTON_SELECT": 7,
-        # Add more mappings if necessary
-    }
-
-    while True:
-        # Get input from pyboy's get_input method
-        input_events = env.game.get_input()
-        env.game.tick()
-        env.render()
-        if len(input_events) == 0:
-            continue
-                
-        for event in input_events:
-            event_str = str(event)
-            if event_str in window_event_to_action:
-                action_index = window_event_to_action[event_str]
-                observation, reward, done, _, info = env.step(
-                    action_index, # fast_video=False
-                )
-                
-                # Check for game over
-                if done:
-                    print(f"{done}")
-                    break
-
-                # Additional game logic or information display can go here
-                print(f"new Reward: {reward}\n")
-                
-    
-# Initialize a Manager for shared dict for completion % tracking across all envs
-manager = Manager()
-# shared_bytes_io_data = manager.list([b''])  # Holds serialized BytesIO data
-shared_data = manager.dict()
 
 class Base:
     # Shared counter among processes
@@ -187,12 +94,15 @@ class Base:
     # Initialize a shared integer with a lock for atomic updates
     shared_length = multiprocessing.Value('i', 0)  # 'i' for integer
     lock = multiprocessing.Lock()  # Lock to synchronize access
-
-
+    
+    # Initialize a Manager for shared BytesIO object
+    manager = Manager()
+    shared_bytes_io_data = manager.list([b''])  # Holds serialized BytesIO data
+    
     def __init__(
         self,
         rom_path="pokemon_red.gb",
-        state_path=random, # None
+        state_path= random,
         headless=True,
         save_video=False,
         quiet=False,
@@ -203,18 +113,13 @@ class Base:
             env_id = Base.counter.value
             Base.counter.value += 1
             
-        print(f'env_id {env_id} created.')
-            
-        self.shared_data = shared_data
         self.state_file = get_random_state()
-        self.randstate = os.path.join(STATE_PATH, self.state_file)
-        state_path = self.randstate = os.path.join(STATE_PATH, self.state_file)
+        state_path = self.randstate
         """Creates a PokemonRed environment"""
-        if state_path is None:
-            state_path = STATE_PATH + "Bulbasaur.state"
-        else:
-            state_path = self.randstate
-        
+     #   if state_path is None:
+      #      state_path = STATE_PATH + "Bulbasaur.state"
+      #  else:
+          #  state_path = self.randstate
         self.game, self.screen = make_env(rom_path, headless, quiet, save_video=False, **kwargs)
         self.initial_states = [open_state_file(state_path)]
         self.save_video = save_video
@@ -235,37 +140,27 @@ class Base:
         self.exp_path = Path(f'experiments/{str(exp_name)}')
         self.env_id = env_id
         self.s_path = Path(f'{str(self.exp_path)}/sessions/{str(self.env_id)}')
-        self.s_path.mkdir(parents=True, exist_ok=True)
-        
-        self.save_state_dir = self.s_path / "save_states"
-        self.save_state_dir.mkdir(exist_ok=True)
-        
         self.video_path = Path(f'./videos')
         self.video_path.mkdir(parents=True, exist_ok=True)
-        # self.csv_path = Path(f'./csv')
-        # self.csv_path.mkdir(parents=True, exist_ok=True)
+        self.csv_path = Path(f'./csv')
+        self.csv_path.mkdir(parents=True, exist_ok=True)
         self.reset_count = 0
-        self.reload_count = 0 #Used to load inital state and possibly modify rewards, goal is to remove rails over time.
-        self.stuck_count = 0 #reset when things go bad bad
         self.explore_hidden_obj_weight = 1
         self.pokemon_center_save_states = []
         self.pokecenters = [41, 58, 64, 68, 81, 89, 133, 141, 154, 171, 147, 182]
         self.used_cut_on_map_n = 0
         
         # BET ADDED nimixx api
-        # Import this class for api
-        self.api = Game(self.game)
+        self.api = Game(self.game) # import this class for api BET
         
         R, C = self.screen.raw_screen_buffer_dims()
         self.obs_size = (R // 2, C // 2) # 72, 80, 3
 
         if self.use_screen_memory:
-            self.screen_memory_fix = defaultdict(lambda: np.zeros((255, 255, 1), dtype=np.uint8))
             self.screen_memory = defaultdict(
                 lambda: np.zeros((255, 255, 1), dtype=np.uint8)
             )
-            #self.obs_size += (6,)
-            self.obs_size = (R // 2, C // 2, 8) 
+            self.obs_size += (4,)
         else:
             self.obs_size += (3,)
         self.observation_space = spaces.Box(
@@ -274,129 +169,36 @@ class Base:
         self.action_space = spaces.Discrete(len(ACTIONS))
         
         # BET ADDED
-        # BET ADDED TREE INSTANTIATIONS
+        # BET ADDED TREE 
         self.min_distances = {}  # Key: Tree position, Value: minimum distance reached
         self.rewarded_distances = {}  # Key: Tree position, Value: set of rewarded distances
         self.used_cut_on_map_n = 0
         self.seen_map_dict = {}
-        # Define the specific coordinate ranges to encourage exploration around trees
-        self.celadon_tree_attraction_coords = {
-            'inside_barrier': [((28, 34), (2, 17)), ((33, 34), (18, 36))],
-            'tree_coord': [(32, 35)],
-            'outside_box': [((30, 31), (33, 37))]
-        }
         
-        # BET ADDED STATE INSTANTIATIONS
+        # BET ADDED MORE
         self.past_events_string = self.all_events_string
         self._all_events_string = ''
         self.time = 0
+        self.level_reward_badge_scale = 0
         self.special_exploration_scale = 0
         self.elite_4_lost = False
         self.elite_4_early_done = False
         self.elite_4_started_step = None
-        self.pokecenter_ids = [0x01, 0x02, 0x03, 0x0F, 0x15, 0x05, 0x06, 0x04, 0x07, 0x08, 0x0A, 0x09]  
+        self.pokecenter_ids = [0x01, 0x02, 0x03, 0x0F, 0x15, 0x05, 0x06, 0x04, 0x07, 0x08, 0x0A, 0x09]
+        self.reward_scale = 1
         self.has_lemonade_in_bag = False
-        self.has_fresh_water_in_bag = False
-        self.has_soda_pop_in_bag = False
         self.has_silph_scope_in_bag = False
         self.has_lift_key_in_bag = False
         self.has_pokedoll_in_bag = False
         self.has_bicycle_in_bag = False
-        self.gym_info = GYM_INFO
-        self.hideout_seen_coords = {(16, 12, 201), (17, 9, 201), (24, 19, 201), (15, 12, 201), (23, 13, 201), (18, 10, 201), (22, 15, 201), (25, 19, 201), (20, 19, 201), (14, 12, 201), (22, 13, 201), (25, 15, 201), (21, 19, 201), (22, 19, 201), (13, 11, 201), (16, 9, 201), (25, 14, 201), (13, 13, 201), (25, 18, 201), (16, 11, 201), (23, 19, 201), (18, 9, 201), (25, 16, 201), (18, 11, 201), (22, 14, 201), (19, 19, 201), (18, 19, 202), (25, 13, 201), (13, 10, 201), (24, 13, 201), (13, 12, 201), (25, 17, 201), (16, 10, 201), (13, 14, 201)}
-        self.cut_coords = {}
-        self.cut_tiles = 0
-        self.completed_milestones = []
-        self.current_time = datetime.now()
-        
-        
-        self.used_cut_reward = 0 
-        self.novel_menu_reward = 0 
-        
-        # BET ADDED INITIALIZATION OF ALL REWARDS INSTANTIATIONS
-        self.event_reward = 0
-        self.bill_capt_reward = 0
-        self.seen_pokemon_reward = 0
-        self.caught_pokemon_reward = 0
-        self.moves_obtained_reward = 0
-        self.bill_reward = 0
-        self.hm_reward = 0
-        self.level_reward = 0
-        self.death_reward = 0
-        self.badges_reward = 0
-        self.healing_reward = 0
-        self.exploration_reward = 0
-        self.cut_rew = 0
-        self.that_guy_reward = 0
-        self.cut_coords_reward = 0
-        self.cut_tiles_reward = 0
-        self.tree_distance_reward = 0
-        self.dojo_reward = 0
-        self.hideout_reward = 0
         self.has_lemonade_in_bag_reward = 0
-        self.has_fresh_water_in_bag_reward = 0
-        self.has_soda_pop_in_bag_reward = 0
         self.has_silph_scope_in_bag_reward = 0
         self.has_lift_key_in_bag_reward = 0
         self.has_pokedoll_in_bag_reward = 0
         self.has_bicycle_in_bag_reward = 0
-        self.dojo_events_reward = 0
-        self.silph_co_events_reward = 0
-        self.hideout_events_reward = 0
-        self.poke_tower_events_reward = 0
-        self.lock_1_use_reward = 0
-        self.gym3_events_reward = 0
-        self.gym4_events_reward = 0
-        self.gym5_events_reward = 0
-        self.gym6_events_reward = 0
-        self.gym7_events_reward = 0
-        self.reward_scale = 4
-        self.level_reward_badge_scale = 0
-        self.bill_state = 0
-        self.badges = 0
-        self.len_respawn_reward = 0
-        self.final_reward = 0
-        self.reward = 0
-        self.rocket_hideout_maps = [199, 200, 201, 202, 203]
-        self.poketower_maps = [142, 143, 144, 145, 146, 147, 148]
-        self.silph_co_maps = [181, 207, 208, 209, 210, 211, 212, 213, 233, 234, 235, 236]
-        self.vermilion_city_gym_map = [92]
-        self.bonus_exploration_reward_maps = self.rocket_hideout_maps + self.poketower_maps + self.silph_co_maps + self.vermilion_city_gym_map
+        self.gym_info = GYM_INFO
         
-        self.rocket_hideout_reward_shape = [5, 6, 7, 8, 10]
-        self.vermilion_city_and_gym_reward_shape = [10]
-        self.cut = 0
-        self.max_multiplier_cap = 5  # Cap for the dynamic reward multiplier
-        self.exploration_reward_cap = 2000  # Cap for the total exploration reward
-        self.initial_multiplier_value = 1  # Starting value for the multiplier
-                
-        # Dynamic progress detection / rewarding
-        self.last_progress_step = 0  # Step at which the last progression was made
-        self.current_step = 0  # Current step in the training process
-        self.progression_detected = False
-        self.bonus_reward_increment = 0.02  # Initial bonus reward increment
-        self.max_bonus_reward_increment = 0.1  # Maximum bonus reward increment
-        self.bonus_reward_growth_rate = 0.01  # How much the bonus increases per step without progression
-        
-        # More dynamic rewards stuff
-        self.seen_coords_specific_maps = set()
-        self.steps_since_last_new_location = 0
-        self.step_threshold = 20480
-        self.recent_frames = []
-        self.agent_stats = {}
-        
-        self.used_cut_reward = 0
-
-        # Milestone completion variables (adjust as desired)
-        self.milestone_keys = ["badge_1", "mt_moon_completion", "badge_2", 
-                       "bill_completion", "rubbed_captains_back", 
-                       "taught_cut", "used_cut_on_good_tree"]
-        self.milestone_threshold_values = [0.3, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3] # len == len(self.milestone_threshold_dict)
-        self.milestone_threshold_dict = ({key: value} for key, value in zip(self.milestone_keys, self.milestone_threshold_values))
-        self.overall_progress = {}
-        self.actions_required = {}
-        self.selected_files = {}
-
+    
     def save_screenshot(self, event, map_n):
         self.screenshot_counter += 1
         ss_dir = Path('screenshots')
@@ -411,7 +213,7 @@ class Base:
         self.game.save_state(state)
         current_map_n = ram_map.map_n
         self.pokemon_center_save_states.append(state)
-        # self.initial_states.append(state)
+        self.initial_states.append(state)
         
     def load_pokemon_center_state(self):
         return self.pokemon_center_save_states[len(self.pokemon_center_save_states) -1]
@@ -429,20 +231,7 @@ class Base:
     def reset(self, seed=None, options=None):
         """Resets the game. Seeding is NOT supported"""
         return self.screen.screen_ndarray(), {}
-    
-    def bet_fixed_window(self, glob_r, glob_c):
-        """Create a centered window around the player's position that tracks explored coords across all maps"""
-        half_window_height = 72 // 2
-        half_window_width = 80 // 2        
-        start_y = max(0, glob_r - half_window_height)
-        start_x = max(0, glob_c - half_window_width)
-        end_y = min(444, glob_r + half_window_height)
-        end_x = min(436, glob_c + half_window_width)
-        viewport = self.global_map[start_y:end_y, start_x:end_x]
-        if viewport.shape != (72, 80):
-            viewport = resize(viewport, (72, 80), order=0, anti_aliasing=False, preserve_range=True).astype(np.uint8)        
-        return viewport
-    
+
     def get_fixed_window(self, arr, y, x, window_size):
         height, width, _ = arr.shape
         h_w, w_w = window_size[0], window_size[1]
@@ -466,91 +255,80 @@ class Base:
             mode="constant",
         )
 
-  
-    def update_seen_coords(self):
-        for (y, x) in self.bet_seen_coords:
-            if 0 <= y < 444 and 0 <= x < 436:
-                self.global_map[y, x] = 255  # Mark visited locations white
+    def encode_badges_as_pixel(self, badges):
+        # Encode the number of badges into the intensity of the red channel of a pixel
+        # Assuming badges is an integer representing the count of badges
+        intensity = int((badges / 8) * 255)  # Scale the number of badges to 0-255
+        return np.array([intensity, 0, 0, 255], dtype=np.uint8)  # Red channel encoding
 
     def render(self):
-        # Fetch game state variables
-        cut_available = self.cut                    #1 bit
-        lift_key = self.has_lift_key_in_bag         #1 bit
-        bicycle = self.has_bicycle_in_bag           #1 bit
-        pokedoll = self.has_pokedoll_in_bag         #1 bit
-        flute = self._have_pokeflute                #1 bit
-        badge_count = min(self.badge_count, 8)      #3 bits
-        pokecenter_used = min(self.game.get_memory_value(0xD719),16) #highest value 16? #4bits
-        
-        screen_data = self.screen.screen_ndarray()[::2, ::2] #initialize this before assignment
-        events = self.get_events() 
-        pokemon_seen = int(sum(self.seen_pokemon))
-        pokemon_owned = int(sum(self.caught_pokemon)) #150 we need a full channel 
-        
-        health = self.read_hp_fraction()
-        level = max(self.get_party_levels())
-        capped_level = min(level, 64)  
-        if self.max_pokeball_count != 0:
-            has_balls = 1
-        else:
-            has_balls = 0
-        if health > 0.75:
-            health_value = 3
-        elif health > 0.5:
-            health_value = 2
-        elif health > 0.25:
-            health_value = 1
-        else:
-            health_value = 0
-        
-        status_byte = (
-        (badge_count & 0b111) |           # Lower 3 bits for badge_count
-        (int(cut_available) << 3) |       # 4th bit for cut_available
-        (int(lift_key) << 4) |            # 5th bit for lift key
-        (int(pokedoll) << 5) |            # 6th bit for pokedoll key
-        (int(bicycle) << 6) |             # 7th bit for bicycle key
-        (int(flute) << 7)                 # 8th bit for flute key
-        )
-        status_channel = np.full((screen_data.shape[0], screen_data.shape[1], 1), status_byte, dtype=np.uint8)
-        
-        poke_status_byte = (
-        (health_value & 0b11) |           # Lower 2 bits for health_value
-        (int(capped_level) << 3) |        # 3rd - 7th bit for max_level to 64
-        (int(has_balls) << 7)             # 8th bit for has pokeballs (true/false)
-        )
-        poke_channel = np.full((screen_data.shape[0], screen_data.shape[1], 1), poke_status_byte, dtype=np.uint8)
+        rendered_image = self.screen.screen_ndarray()[::2, ::2]  # Assuming downsampled screen
+    
+        if self.use_screen_memory:
+            r, c, map_n = ram_map.position(self.game)
+            mmap = self.screen_memory[map_n]
+            if 0 <= r <= 254 and 0 <= c <= 254:
+                mmap[r, c] = 255
+            # Incorporate mmap into the rendered image as before
+            rendered_image = np.concatenate(
+                (
+                    rendered_image,
+                    self.get_fixed_window(mmap, r, c, self.observation_space.shape),
+                ),
+                axis=2,
+            )
+    
+        badges = ram_map.badges(self.game)  # Extract badges information
         
         
-        # Create additional channels
-        events_channel = np.full((screen_data.shape[0], screen_data.shape[1], 1), events, dtype=np.uint8)
-        pokemon_owned_channel = np.full((screen_data.shape[0], screen_data.shape[1], 1), pokemon_owned, dtype=np.uint8)
-        pokemon_seen_channel = np.full((screen_data.shape[0], screen_data.shape[1], 1), pokemon_seen, dtype=np.uint8)
-        # Position and memory map handling
-        r, c, map_n = ram_map.position(self.game)
-        mmap = self.screen_memory[map_n]
-        if 0 <= r <= 254 and 0 <= c <= 254:
-            mmap[r, c] = 255
-        extended_mmap = self.get_fixed_window(mmap, r, c, screen_data.shape[:2] + (1,))
+        intensity = int((badges / 8) * 255)  # Scale number of badges to 0-255
+        # Creating a 4x4 badge block with semi-transparency
+        badge_block = np.array([intensity, 0, 0, 128] * 16, dtype=np.uint8).reshape((4, 4, 4))  # Semi-transparent red
+        
+        
+        # Place the badge pixel in a predetermined location in the rendered image
+        # For simplicity, let's place it in the top-left corner
+        rendered_image[0:4, 0:4, :] = badge_block
+        
+        cut = self.cut
+        intensity = cut * 255  # true false value for the "cut" ability, assuming it's a binary indication
 
-        # Concatenate all channels
-        result = np.concatenate(
-            (screen_data[..., :2], extended_mmap, status_channel, events_channel, pokemon_owned_channel, poke_channel, pokemon_seen_channel ),
-            axis=2
-        )
+        # Creating a 4x4 semi-transparent blue block
+        cut_block = np.array([0, 0, intensity, 128] * 16, dtype=np.uint8).reshape((4, 4, 4))  # Semi-transparent blue
 
-        return result
-
-    def pokeball_reward(self):
+        # Place the cut block 4 pixels over from the top-left corner, next to the first block
+        rendered_image[0:4, 4:8, :] = cut_block
         
-        current_pokeballs = ram_map.get_pokeball_count(self.game)
-        historical_max = self.max_pokeball_count
-
-        # Reward the AI for surpassing the previous maximum inventory level
-        if current_pokeballs > historical_max:
-            self.max_pokeball_count = current_pokeballs  # Update the historical max
-        self.pokeball_rewards  = 10 * math.log(historical_max + 1, 3) #Big reward for the first much smaller for each after
+        seen_pokemon = sum(self.seen_pokemon)
+        intensity = int((seen_pokemon / 200) * 255)
+        seen_pokemon_block = np.array([intensity, 0, 0, 128] * 16, dtype=np.uint8).reshape((4, 4, 4))  # Semi-transparent red
+        rendered_image[0:4, 8:12, :] = seen_pokemon_block
         
-            
+        owned_pokemon = sum(self.caught_pokemon)
+        intensity = int((owned_pokemon / 200) * 255)
+        owned_pokemon_block = np.array([0, intensity, 0, 128] * 16, dtype=np.uint8).reshape((4, 4, 4))  # Semi-transparent green
+        rendered_image[0:4, 12:16, :] = owned_pokemon_block
+        
+        
+        #used_cut_on_tree_rew = 0 # should be 0 to prevent cut abuse
+        #start_menu = self.seen_start_menu * 0.01
+        #pokemon_menu = self.seen_pokemon_menu * 0.1
+        #stats_menu = self.seen_stats_menu * 0.1
+        #bag_menu = self.seen_bag_menu * 0.1
+        #self.has_lemonade_in_bag = False
+        #self.has_silph_scope_in_bag = False
+        #self.has_lift_key_in_bag = False
+        #self.has_pokedoll_in_bag = False
+        #self.has_bicycle_in_bag = False
+        #self.has_lemonade_in_bag_reward = 0
+        #self.has_silph_scope_in_bag_reward = 0
+        #self.has_lift_key_in_bag_reward = 0
+        #self.has_pokedoll_in_bag_reward = 0
+        #self.has_bicycle_in_bag_reward = 0
+        
+        return rendered_image
+        
+    # BET ADDED TREE OBSERVATIONS
     def detect_and_reward_trees(self, player_grid_pos, map_n, vision_range=5):
         if map_n not in MAPS_WITH_TREES:
             # print(f"\nNo trees to interact with in map {map_n}.")
@@ -714,7 +492,7 @@ class Environment(Base):
     def __init__(
         self,
         rom_path="pokemon_red.gb",
-        state_path=None, # none
+        state_path=None,
         headless=True,
         save_video=False,
         quiet=False,
@@ -757,10 +535,11 @@ class Environment(Base):
         self.used_cut_coords_set = set()
         self.rewarded_coords = set()
         self.rewarded_position = (0, 0)
+        self.used_cut = 0 # don't reset, for tracking
         # self.seen_coords = set() ## moved from reset
         self.state_loaded_instead_of_resetting_in_game = 0
         self.badge_count = 0
-        self.gym3_lock_piq = 0 
+        
         # BET ADDED
         self.saved_states_dict = {}
         self.seen_maps_no_reward = set()
@@ -772,57 +551,31 @@ class Environment(Base):
         self._all_events_string = ''
         self.total_healing_rew = 0
         self.last_health = 1
-        
-        self.poketower = [142, 143, 144, 145, 146, 147, 148]
-        self.pokehideout = [199, 200, 201, 202, 203]
-        self.saffron_city = [10, 70, 76, 178, 180, 182]
-        self.fighting_dojo = [177]
-        self.vermilion_gym = [92]
-        self.exploration_reward = 0
-        self.celadon_tree_reward = 0
-        self.celadon_tree_reward_counter = 0
-        self.ctr_bonus = 0
-        
-        # Standard amount for exploration reward per new tile explored
-        self.exploration_reward_increment = 0.002
-        # Bonus amount for exploration reward per new tile explored
-        self.bonus_fixed_expl_reward_increment = 0.005
-        self.bonus_dynamic_reward = 0
-        self.bonus_dynamic_reward_increment = 0.0003
-        self.bonus_dynamic_reward_multiplier = 0.0001
-        
-        # key: map_n, value: bonus reward amount per coord explored
-        self.fixed_bonus_expl_maps = {199: self.bonus_fixed_expl_reward_increment,
-                                     200: self.bonus_fixed_expl_reward_increment,
-                                     201: self.bonus_fixed_expl_reward_increment,
-                                     202: self.bonus_fixed_expl_reward_increment,
-                                     203: self.bonus_fixed_expl_reward_increment,
-                                     92: self.bonus_fixed_expl_reward_increment}
-        self.dynamic_bonus_expl_maps = set()
-        self.dynamic_bonus_expl_seen_coords = set()
-        self.shaped_exploration_reward = 0
-        self.lock_1_use_counter = 0
-        self.last_lock_1_use_counter = 0
-        self.last_can_mem_val = -1
-        self.can_reward = 0
-        self.respawn = set()
-        
-        # Exploration reward capper
-        self.healthy_increases = [23, 30, 33, 37, 42, 43]
-        self.ema = 0  # Initialize the EMA at 0 for the exploration reward
-        self.last_time = 0  # To calculate intervals
-        self.smoothing = 2 / (5000000 + 1)  # Assuming a period of 5 million steps for smoothing
-        self.average_healthy_slope = self.calculate_average_slope(self.healthy_increases)
-        self.unhealthy_slope_threshold = 1.25 * self.average_healthy_slope
-        # For calculating projected healthy increase, we need a reference point in time and reward
-        self.reference_time = 0
-        self.reference_reward = self.healthy_increases[0]
 
-
+        # #for reseting at 7 resets - leave commented out
+        # self.prev_map_n = None
+        # self.max_events = 0
+        # self.max_level_sum = 0
         self.max_opponent_level = 0
-
+        # self.seen_coords = set()
+        # self.seen_maps = set()
+        # self.total_healing = 0
+        # self.last_hp = 1.0
+        # self.last_party_size = 1
+        # self.hm_count = 0
+        # self.cut = 0
         self.used_cut = 0
-
+        # self.cut_coords = {}
+        # self.cut_tiles = {} # set([])
+        # self.cut_state = deque(maxlen=3)
+        # self.seen_start_menu = 0
+        # self.seen_pokemon_menu = 0
+        # self.seen_stats_menu = 0
+        # self.seen_bag_menu = 0
+        # self.seen_cancel_bag_menu = 0
+        # self.seen_pokemon = np.zeros(152, dtype=np.uint8)
+        # self.caught_pokemon = np.zeros(152, dtype=np.uint8)
+        # self.moves_obtained = np.zeros(0xA5, dtype=np.uint8)
         
     def read_hp_fraction(self):
         hp_sum = sum([ram_map.read_hp(self.game, add) for add in [0xD16C, 0xD198, 0xD1C4, 0xD1F0, 0xD21C, 0xD248]])
@@ -1115,15 +868,15 @@ class Environment(Base):
             gym_next = self.gym_info[badge_count]
             gym_num_poke = gym_next['num_poke']
             gym_max_level = gym_next['max_level'] * self.level_reward_badge_scale
-            self.level_reward = self.get_max_n_levels_sum(gym_num_poke, gym_max_level)  # changed, level reward for all 6 pokemon
-            if badge_count >= 7 and self.level_reward > self.max_level_rew and not self.is_in_elite_4:
-                level_diff = self.level_reward - self.max_level_rew
+            level_reward = self.get_max_n_levels_sum(gym_num_poke, gym_max_level)  # changed, level reward for all 6 pokemon
+            if badge_count >= 7 and level_reward > self.max_level_rew and not self.is_in_elite_4:
+                level_diff = level_reward - self.max_level_rew
                 if level_diff > 6 and self.party_level_post == 0:
                     # self.party_level_post = 0
                     pass
                 else:
                     self.party_level_post += level_diff
-            self.max_level_rew = max(self.max_level_rew, self.level_reward)
+            self.max_level_rew = max(self.max_level_rew, level_reward)
         return ((self.max_level_rew - self.party_level_post) * 0.5) + (self.party_level_post * 2.0)
         # return self.max_level_rew * 0.5  # 11/11-3 changed: from 0.5 to 1.0
     
@@ -1430,6 +1183,8 @@ class Environment(Base):
         if self.can_use_cut and not self._have_pokeflute:
             self._have_pokeflute = 0x49 in self.get_items_in_bag()
         return self._have_pokeflute
+        
+
     
     def get_base_event_flags(self):
         # event patches
@@ -1470,105 +1225,6 @@ class Environment(Base):
         0,
     )
     
-    def print_dict_items_and_sum(self, d):
-        total_sum = 0  # Initialize sum for the current dictionary level
-        
-        for key, value in list(d.items()):
-            if isinstance(value, dict):
-                # Recursively process nested dictionaries
-                nested_filtered_dict, sum_nested = self.print_dict_items_and_sum(value)
-                if nested_filtered_dict:  # Only include and print if the nested dictionary is not empty
-                    print(f"{key}:")
-                    d[key] = nested_filtered_dict  # Update the current dictionary with the filtered nested dictionary
-                    total_sum += sum_nested  # Add the sum from the nested dictionary to the total sum
-                else:
-                    del d[key]  # Remove the key if the nested dictionary is empty after filtering
-            elif isinstance(value, (int, float)) and value > 0:
-                # Include and print the key-value pair if the value is a number greater than 0
-                print(f"{key}: {value}")
-                total_sum += value  # Add numeric value to total sum
-            else:
-                del d[key]  # Remove the key if the value is not a positive number
-
-        return d, total_sum  # Return the filtered dictionary and total sum of values
-
-    def write_hp_for_first_pokemon(self, new_hp, new_max_hp):
-        """Write new HP value for the first party Pokémon."""
-        # HP address for the first party Pokémon
-        hp_addr = ram_map.HP_ADDR[0]
-        max_hp_addr = ram_map.MAX_HP_ADDR[0]        
-        # Break down the new_hp value into two bytes
-        hp_high = new_hp // 256  # Get the high byte
-        hp_low = new_hp % 256    # Get the low byte
-        max_hp_high = new_max_hp // 256  # Get the high byte
-        max_hp_low = new_max_hp % 256    # Get the low byte        
-        # Write the high byte and low byte to the corresponding memory addresses
-        ram_map.write_mem(self.game, hp_addr, hp_high)
-        ram_map.write_mem(self.game, hp_addr + 1, hp_low)
-        ram_map.write_mem(self.game, max_hp_addr, max_hp_high)
-        ram_map.write_mem(self.game, max_hp_addr + 1, max_hp_low)
-        # print(f"Set Max HP for the first party Pokémon to {new_max_hp}")
-        # print(f"Set HP for the first party Pokémon to {new_hp}")
-    
-    def update_party_hp_to_max(self):
-        """
-        Update the HP of all party Pokémon to match their Max HP.
-        """
-        for i in range(len(ram_map.CHP)):
-            # Read Max HP
-            max_hp = ram_map.read_uint16(self.game, ram_map.MAX_HP_ADDR[i])            
-            # Calculate high and low bytes for Max HP to set as current HP
-            hp_high = max_hp // 256
-            hp_low = max_hp % 256
-            # Update current HP to match Max HP
-            ram_map.write_mem(self.game, ram_map.CHP[i], hp_high)
-            ram_map.write_mem(self.game, ram_map.CHP[i] + 1, hp_low)
-            # print(f"Updated Pokémon {i+1}: HP set to Max HP of {max_hp}.")
-                
-    def restore_party_move_pp(self):
-        """
-        Restores the PP of all moves for the party Pokémon based on moves_dict data.
-        """
-        for i in range(len(ram_map.MOVE1)):  # Assuming same length for MOVE1 to MOVE4
-            moves_ids = [ram_map.mem_val(self.game, move_addr) for move_addr in [ram_map.MOVE1[i], ram_map.MOVE2[i], ram_map.MOVE3[i], ram_map.MOVE4[i]]]
-            
-            for j, move_id in enumerate(moves_ids):
-                if move_id in ram_map.moves_dict:
-                    # Fetch the move's max PP
-                    max_pp = ram_map.moves_dict[move_id]['PP']
-                    
-                    # Determine the corresponding PP address based on the move slot
-                    pp_addr = [ram_map.MOVE1PP[i], ram_map.MOVE2PP[i], ram_map.MOVE3PP[i], ram_map.MOVE4PP[i]][j]
-                    
-                    # Restore the move's PP
-                    ram_map.write_mem(self.game, pp_addr, max_pp)
-                    # print(f"Restored PP for {ram_map.moves_dict[move_id]['Move']} to {max_pp}.")
-                else:
-                    pass
-                    # print(f"Move ID {move_id} not found in moves_dict.")
-
-    def count_gym_3_lock_1_use(self):
-        gym_3_event_dict = ram_map_leanke.monitor_gym3_events(self.game)
-        if (lock_1_status := gym_3_event_dict['lock_one']) == 2 and self.last_lock_1_use_counter == 0:
-            self.lock_1_use_counter += 1
-            self.last_lock_1_use_counter = lock_1_status
-        if gym_3_event_dict['lock_one'] == 0:
-            self.last_lock_1_use_counter = 0
-
-    def get_lock_1_use_reward(self):
-        self.lock_1_use_reward = self.lock_1_use_counter * 10
-
-    def get_can_reward(self):
-        mem_val = ram_map.trash_can_memory(self.game)
-        if mem_val == self.last_can_mem_val:
-            self.can_reward = 0
-        else:
-            try:
-                self.can_reward = mem_val / mem_val
-                self.last_can_mem_val = mem_val
-            except:
-                self.can_reward = 0
-
     def get_all_events_reward(self):
         if self.all_events_string != self.past_events_string:
             first_i = -1
@@ -1631,450 +1287,10 @@ class Environment(Base):
             else:
                 detailed_rewards[event_name] = (event_value * reward_increment * reward_multiplier)
         return detailed_rewards
-    
-    def update_map_id_to_furthest_visited(self):
-        # Define the ordered list of map IDs from earliest to latest
-        map_ids_ordered = [1, 2, 15, 3, 5, 21, 4, 6, 10, 7, 8, 9]        
-        # Obtain the current map ID (map_n) of the player
-        _, _, map_n = ram_map.position(self.game)        
-        # Check if the current map ID is in the list of specified map IDs
-        if map_n in map_ids_ordered:
-            # Find the index of the current map ID in the list
-            current_index = map_ids_ordered.index(map_n)            
-            # Select the furthest (latest) visited map ID from the list
-            # This is done by slicing the list up to the current index + 1
-            # and selecting the last element, ensuring we prioritize later IDs
-            furthest_visited_map_id = map_ids_ordered[:current_index + 1][-1]            
-            # Update the map ID to the furthest visited
-            ram_map.write_mem(self.game, 0xd719, furthest_visited_map_id)
-            # print(f"env_id {self.env_id}: Updated map ID to the furthest visited: {furthest_visited_map_id}")
 
-    def in_coord_range(self, coord, ranges):
-        """Utility function to check if a coordinate is within a given range."""
-        r, c = coord
-        if isinstance(ranges[0], tuple):  # Check if range is a tuple of ranges
-            return any(r >= range_[0] and r <= range_[1] for range_ in ranges[0]) and \
-                any(c >= range_[0] and c <= range_[1] for range_ in ranges[1])
-        return r == ranges[0] and c == ranges[1]
-
-    def check_bag_items(self, current_bag_items):
-        if 'Lemonade' in current_bag_items:
-            self.has_lemonade_in_bag = True
-            self.has_lemonade_in_bag_reward = 20
-        if 'Fresh Water' in current_bag_items:
-            self.has_fresh_water_in_bag = True
-            self.has_fresh_water_in_bag_reward = 20
-        if 'Soda Pop' in current_bag_items:
-            self.has_soda_pop_in_bag = True
-            self.has_soda_pop_in_bag_reward = 20
-        if 'Silph Scope' in current_bag_items:
-            self.has_silph_scope_in_bag = True
-            self.has_silph_scope_in_bag_reward = 20
-        if 'Lift Key' in current_bag_items:
-            self.has_lift_key_in_bag = True
-            self.has_lift_key_in_bag_reward = 20
-        if 'Poke Doll' in current_bag_items:
-            self.has_pokedoll_in_bag = True
-            self.has_pokedoll_in_bag_reward = 20
-        if 'Bicycle' in current_bag_items:
-            self.has_bicycle_in_bag = True
-            self.has_bicycle_in_bag_reward = 20
-        
-    def is_new_map(self, r, c, map_n):
-        self.update_heat_map(r, c, map_n)
-        if map_n != self.prev_map_n:
-            self.used_cut_on_map_n = 0
-            self.prev_map_n = map_n
-            if map_n not in self.seen_maps:
-                self.seen_maps.add(map_n)
-            # self.save_state()
-        
-    def get_level_reward(self):
-        party_size, party_levels = ram_map.party(self.game)
-        self.max_level_sum = max(self.max_level_sum, sum(party_levels))
-        if self.max_level_sum < 50: # 30
-            self.level_reward = 1 * self.max_level_sum
-        else:
-            self.level_reward = 50 + (self.max_level_sum - 50) / 4 # 30
-        
-    def get_healing_and_death_reward(self):
-        party_size, party_levels = ram_map.party(self.game)
-        hp = ram_map.hp(self.game)
-        hp_delta = hp - self.last_hp
-        party_size_constant = party_size == self.last_party_size
-        if hp_delta > 0.2 and party_size_constant and not self.is_dead:
-            self.total_healing += hp_delta
-        if hp <= 0 and self.last_hp > 0:
-            self.death_count += 1
-            self.death_count_per_episode += 1
-            self.is_dead = True
-        elif hp > 0.01:  # TODO: Check if this matters
-            self.is_dead = False
-        self.last_hp = hp
-        self.last_party_size = party_size
-        self.death_reward = 0
-        self.healing_reward = self.total_healing   
-    
-    def get_badges_reward(self):
-        self.badges = ram_map.badges(self.game)
-        self.badges_reward = 10 * self.badges  # 5 BET
-
-    def get_bill_reward(self):
-        self.bill_state = ram_map.saved_bill(self.game)
-        self.bill_reward = 5 * self.bill_state
-        
-    def get_bill_capt_reward(self):
-        self.bill_capt_reward = ram_map.bill_capt(self.game)
-
-    def get_hm_reward(self):
-        hm_count = ram_map.get_hm_count(self.game)
-        if hm_count >= 1 and self.hm_count == 0:
-            # self.save_state()
-            self.hm_count = 1
-        self.hm_reward = hm_count * 10
-
-    def get_cut_reward(self): #Rewards Having Cut
-        self.cut_reward = self.cut * 10 # 8  # 10 works - 2 might be better, though
-
-    def get_tree_distance_reward(self, r, c, map_n):
-        glob_r, glob_c = game_map.local_to_global(r, c, map_n) 
-        tree_distance_reward = self.detect_and_reward_trees((glob_r, glob_c), map_n, vision_range=5)
-        if self.cut < 1:
-            tree_distance_reward = tree_distance_reward / 10
-        self.tree_distance_reward = tree_distance_reward
-
-    def get_party_size(self):
-        party_size, _ = ram_map.party(self.game)
-        return party_size
-    
-    def get_party_levels(self):
-        _, levels = ram_map.party(self.game)
-        return levels
-    
-    def get_money(self):
-        money = ram_map.money(self.game)
-        return money
-
-    def get_opponent_level_reward(self):
-        max_opponent_level = max(ram_map.opponent(self.game))
-        self.max_opponent_level = max(self.max_opponent_level, max_opponent_level)
-        self.opponent_level_reward = 0.006 * self.max_opponent_level  # previously disabled BET
-        return self.opponent_level_reward
-
-    def get_events(self):
-        events = ram_map.events(self.game)
-        return events
-    
-    def get_event_reward(self):
-        events = ram_map.events(self.game)
-        self.max_events = max(self.max_events, events)
-        self.event_reward = self.max_events
-
-    def get_dojo_reward(self):
-        self.dojo_reward = ram_map_leanke.dojo(self.game)
-        self.defeated_fighting_dojo = 1 * int(ram_map.read_bit(self.game, 0xD7B1, 0))
-        self.got_hitmonlee = 3 * int(ram_map.read_bit(self.game, 0xD7B1, 6))
-        self.got_hitmonchan = 3 * int(ram_map.read_bit(self.game, 0xD7B1, 7))
-
-    def get_hideout_reward(self):
-        self.hideout_reward = ram_map_leanke.hideout(self.game)
-
-    def get_silph_co_events_reward(self):
-        self.silph_co_events_reward = self.calculate_event_rewards(
-            ram_map_leanke.monitor_silph_co_events(self.game),
-            base_reward=10, reward_increment=10, reward_multiplier=2)
-
-    def get_dojo_events_reward(self):
-        self.dojo_events_reward = self.calculate_event_rewards(
-            ram_map_leanke.monitor_dojo_events(self.game),
-            base_reward=10, reward_increment=2, reward_multiplier=3)
-
-    def get_hideout_events_reward(self):
-        self.hideout_events_reward = self.calculate_event_rewards(
-            ram_map_leanke.monitor_hideout_events(self.game),
-            base_reward=10, reward_increment=10, reward_multiplier=3)
-
-    def get_poke_tower_events_reward(self):
-        self.poke_tower_events_reward = self.calculate_event_rewards(
-            ram_map_leanke.monitor_poke_tower_events(self.game),
-            base_reward=10, reward_increment=2, reward_multiplier=1)
-
-    def get_gym_events_reward(self):
-        self.gym3_events_reward = self.calculate_event_rewards(
-            ram_map_leanke.monitor_gym3_events(self.game),
-            base_reward=10, reward_increment=2, reward_multiplier=1)
-        self.gym4_events_reward = self.calculate_event_rewards(
-            ram_map_leanke.monitor_gym4_events(self.game),
-            base_reward=10, reward_increment=2, reward_multiplier=1)
-        self.gym5_events_reward = self.calculate_event_rewards(
-            ram_map_leanke.monitor_gym5_events(self.game),
-            base_reward=10, reward_increment=2, reward_multiplier=1)
-        self.gym6_events_reward = self.calculate_event_rewards(
-            ram_map_leanke.monitor_gym6_events(self.game),
-            base_reward=10, reward_increment=2, reward_multiplier=1)
-        self.gym7_events_reward = self.calculate_event_rewards(
-            ram_map_leanke.monitor_gym7_events(self.game),
-            base_reward=10, reward_increment=2, reward_multiplier=1)
-
-    def calculate_menu_rewards(self):
-        start_menu = self.seen_start_menu * 0.01
-        pokemon_menu = self.seen_pokemon_menu * 0.1
-        stats_menu = self.seen_stats_menu * 0.1
-        bag_menu = self.seen_bag_menu * 0.1
-        self.that_guy_reward = (start_menu + pokemon_menu + stats_menu + bag_menu)
-    
-    def calculate_cut_coords_and_tiles_rewards(self):
-        self.cut_coords_reward = sum(self.cut_coords.values()) * 1.0
-        self.cut_tiles_reward = len(self.cut_tiles) * 1.0
-        
-    def get_used_cut_coords_reward(self):
-        return len(self.used_cut_coords_dict) * 0.2
-    
-    def calculate_seen_caught_pokemon_moves(self):   
-        self.seen_pokemon_reward = self.reward_scale * sum(self.seen_pokemon)
-        self.caught_pokemon_reward = self.reward_scale * sum(self.caught_pokemon)
-        self.moves_obtained_reward = self.reward_scale * sum(self.moves_obtained)
-    
-    def subtract_previous_reward_v1(self, last_reward, reward):
-        if self.last_reward is None:
-            updated_reward = 0
-            updated_last_reward = 0
-        else:
-            updated_reward = reward - self.last_reward
-            updated_last_reward = reward
-            if updated_reward <= updated_last_reward:
-                self.stuck_count += 1
-        return updated_reward, updated_last_reward
-    
-    def cut_check(self, action):
-        # Cut check
-        # 0xCFC6 - wTileInFrontOfPlayer
-        # 0xCFCB - wUpdateSpritesEnabled
-        if ram_map.mem_val(self.game, 0xD057) == 0: # is_in_battle if 1
-            if self.cut == 1:
-                player_direction = self.game.get_memory_value(0xC109)
-                x, y, map_id = self.get_game_coords()  # x, y, map_id
-                if player_direction == 0:  # down
-                    coords = (x, y + 1, map_id)
-                if player_direction == 4:
-                    coords = (x, y - 1, map_id)
-                if player_direction == 8:
-                    coords = (x - 1, y, map_id)
-                if player_direction == 0xC:
-                    coords = (x + 1, y, map_id)
-                self.cut_state.append(
-                    (
-                        self.game.get_memory_value(0xCFC6),
-                        self.game.get_memory_value(0xCFCB),
-                        self.game.get_memory_value(0xCD6A),
-                        self.game.get_memory_value(0xD367),
-                        self.game.get_memory_value(0xD125),
-                        self.game.get_memory_value(0xCD3D),
-                    )
-                )
-                if tuple(list(self.cut_state)[1:]) in CUT_SEQ:
-                    self.cut_coords[coords] = 5 # 10 reward value for cutting a tree successfully
-                    self.cut_tiles[self.cut_state[-1][0]] = 1
-                elif self.cut_state == CUT_GRASS_SEQ:
-                    self.cut_coords[coords] = 0.001
-                    self.cut_tiles[self.cut_state[-1][0]] = 1
-                elif deque([(-1, *elem[1:]) for elem in self.cut_state]) == CUT_FAIL_SEQ:
-                    self.cut_coords[coords] = 0.001
-                    self.cut_tiles[self.cut_state[-1][0]] = 1
-                if int(ram_map.read_bit(self.game, 0xD803, 0)):
-                    if self.check_if_in_start_menu():
-                        self.seen_start_menu += 1
-                        self.novel_menu_reward += 1 * 2 ** (-1 * self.seen_start_menu)
-                    if self.check_if_in_pokemon_menu():
-                        self.seen_pokemon_menu += 1
-                        self.novel_menu_reward += 1 * 2 ** (-1 * self.seen_pokemon_menu)
-                    if self.check_if_in_stats_menu():
-                        self.seen_stats_menu += 1
-                        self.novel_menu_reward += 1 * 2 ** (-1 * self.seen_stats_menu)
-                    if self.check_if_in_bag_menu():
-                        self.seen_bag_menu += 1
-                        self.novel_menu_reward += 1 * 2 ** (-1 * self.seen_bag_menu)
-                    if self.check_if_cancel_bag_menu(action):
-                        self.seen_cancel_bag_menu += 1
-                        self.novel_menu_reward += 1 * 2 ** (-1 * self.seen_cancel_bag_menu )
-
-    def BET_cut_check(self):
-        # Cut check 2 - BET ADDED: used cut on tree
-        # r, c, map_n = ram_map.position(self.game)
-        if ram_map.used_cut(self.game) == 61:
-            ram_map.write_mem(self.game, 0xCD4D, 00) # address, byte to write
-            self.used_cut += 1
-            self.used_cut_reward += 1 * 2 ** (-1 * self.used_cut_reward) * 5
-
-    def celadon_gym_4_tree_reward(self, action):
-        (r, c, map_n) = ram_map.position(self.game)
-        current_location = (r, c, map_n)
-        if current_location == (31, 35, 6):
-            if 20 > self.celadon_tree_reward_counter >= 1:
-                if action == 0 or action == 6:
-                    self.ctr_bonus += 0.05
-            self.celadon_tree_reward = 3 + self.ctr_bonus
-            self.celadon_tree_reward_counter += 1
-
-    def calculate_average_slope(self, increases):
-        slopes = [(increases[i] - increases[i - 1]) for i in range(1, len(increases))]
-        return sum(slopes) / len(slopes)
-    
-    def update_ema(self, reward, current_time):
-        if self.last_time == 0:  # First update
-            self.ema = reward
-        else:
-            elapsed_time = current_time - self.last_time
-            interval_smoothing = 2 / (elapsed_time + 1)
-            self.ema = (reward * interval_smoothing) + (self.ema * (1 - interval_smoothing))
-        self.last_time = current_time
-        return self.ema
-    
-    def get_adjusted_reward(self, reward, current_time):
-        ema_reward = self.update_ema(reward, current_time)
-        elapsed_time_since_reference = current_time - self.reference_time
-        # Calculate the projected healthy reward based on average healthy slope
-        projected_healthy_reward = self.reference_reward + (self.average_healthy_slope * elapsed_time_since_reference)
-        slope_from_reference = (ema_reward - self.reference_reward) / max(elapsed_time_since_reference, 1)
-        
-        if slope_from_reference > self.unhealthy_slope_threshold:
-            # If growth is unhealthy, cap the reward at the projected healthy level
-            return min(ema_reward, projected_healthy_reward)
-        else:
-            # Update reference if growth is healthy
-            self.reference_time = current_time
-            self.reference_reward = ema_reward
-            return ema_reward
-    
-    def get_bet_exploration_reward(self, map_n):
-        r, c, map_n = ram_map.position(self.game)
-        self.seen_coords.add((r, c, map_n))
-        exploration_reward = 0.02 * len(self.seen_coords)
-
-    
-    def get_exploration_reward(self, map_n):
-        r, c, map_n = ram_map.position(self.game)
-        if self.steps_since_last_new_location >= self.step_threshold:
-            self.bonus_dynamic_reward_multiplier += self.bonus_dynamic_reward_increment
-        self.bonus_dynamic_reward = self.bonus_dynamic_reward_multiplier * len(self.dynamic_bonus_expl_seen_coords)    
-        if map_n in self.poketower_maps and int(ram_map.read_bit(self.game, 0xD838, 7)) == 0:
-            rew = 0
-        elif map_n in self.bonus_exploration_reward_maps:
-            rew = (0.05 * len(self.seen_coords)) if self.used_cut < 1 else 0.13 * len(self.seen_coords)
-        else:
-            rew = (0.02 * len(self.seen_coords)) if self.used_cut < 1 else 0.1 * len(self.seen_coords)
-        self.exploration_reward = rew + self.bonus_dynamic_reward
-        self.exploration_reward += self.shaped_exploration_reward
-        self.seen_coords.add((r, c, map_n))
-        self.exploration_reward = self.get_adjusted_reward(self.exploration_reward, self.time)
-    
-    def get_location_shaped_reward(self):
-        r, c, map_n = ram_map.position(self.game)
-        current_location = (r, c, map_n)
-        # print(f'cur_loc={current_location}')
-        if map_n in self.fixed_bonus_expl_maps: # map_n eligible for a fixed bonus reward?
-            bonus_fixed_increment = self.fixed_bonus_expl_maps[map_n] # fixed additional reward from dict
-            self.shaped_exploration_reward = bonus_fixed_increment
-            if current_location not in self.dynamic_bonus_expl_seen_coords: # start progress monitoring on eligible map_n 
-                # print(f'current_location={current_location}')
-                # print(f'self.dynamic_bonus_expl_seen_coords={self.dynamic_bonus_expl_seen_coords}')
-                self.dynamic_bonus_expl_seen_coords.add(current_location) # add coords if unseen
-                self.steps_since_last_new_location = 0
-            else:
-                self.steps_since_last_new_location += 1
-                # print(f'incremented self.steps_since_last_new_location by 1 ({self.steps_since_last_new_location})')
-        else:
-            self.shaped_exploration_reward = 0
-   
-    def get_exploration_reward_v2(self, map_n):
-        r, c, map_n = ram_map.position(self.game)
-        if self.steps_since_last_new_location >= self.step_threshold:
-            # Implementing a cap on the bonus_dynamic_reward_multiplier to prevent it from growing indefinitely
-            self.bonus_dynamic_reward_multiplier = min(self.bonus_dynamic_reward_multiplier + self.bonus_dynamic_reward_increment, self.max_multiplier_cap)
-        self.bonus_dynamic_reward = self.bonus_dynamic_reward_multiplier * len(self.dynamic_bonus_expl_seen_coords)
-        if map_n in self.poketower_maps and int(ram_map.read_bit(self.game, 0xD838, 7)) == 0:
-            rew = 0
-        elif map_n in self.bonus_exploration_reward_maps:
-            rew = (0.05 * len(self.seen_coords)) if self.used_cut < 1 else 0.13 * len(self.seen_coords)
-        else:
-            rew = (0.02 * len(self.seen_coords)) if self.used_cut < 1 else 0.1 * len(self.seen_coords)
-        self.exploration_reward = rew + self.bonus_dynamic_reward
-        self.exploration_reward += self.shaped_exploration_reward
-        # Cap the exploration_reward to prevent it from becoming too large
-        self.exploration_reward = min(self.exploration_reward, self.exploration_reward_cap)
-        self.seen_coords.add((r, c, map_n))
-
-
-        
-    def get_respawn_reward(self):
-        center = self.game.get_memory_value(0xD719)
-        self.respawn.add(center)
-        self.len_respawn_reward = len(self.respawn)
-        return self.len_respawn_reward # * 5
-    
-    # For testing
-    def compute_and_print_rewards(event_reward, bill_capt_rew, seen_pokemon_reward, caught_pokemon_reward, moves_obtained_reward, bill_reward, hm_reward, level_reward, death_reward, badges_reward, healing_reward, exploration_reward, cut_rew, PiQ, cut_coords_reward, cut_tiles_reward, tree_distance_reward, dojo_reward, hideout_reward, lemonade_in_bag_reward, silph_scope_in_bag_reward, lift_key_in_bag_reward, pokedoll_in_bag_reward, bicycle_in_bag_reward, special_location_rewards, can_reward, reward_scale):
-        reward_components = {
-            "event_reward": event_reward,
-            "bill_capt_rew": bill_capt_rew,
-            "seen_pokemon_reward": seen_pokemon_reward,
-            "caught_pokemon_reward": caught_pokemon_reward,
-            "moves_obtained_reward": moves_obtained_reward,
-            "bill_reward": bill_reward,
-            "hm_reward": hm_reward,
-            "level_reward": level_reward,
-            "death_reward": death_reward,
-            "badges_reward": badges_reward,
-            "healing_reward": healing_reward,
-            "exploration_reward": exploration_reward,
-            "cut_rew": cut_rew,
-            "PiQ": self.novel_menu_reward,
-            "cut_coords": cut_coords_reward,
-            "cut_tiles": cut_tiles_reward,
-            "tree_distance_reward": tree_distance_reward * 0.6,
-            "dojo_reward": dojo_reward * 5,
-            "hideout_reward": hideout_reward * 5,
-            "lemonade_in_bag_reward": lemonade_in_bag_reward,
-            "silph_scope_in_bag_reward": silph_scope_in_bag_reward,
-            "lift_key_in_bag_reward": lift_key_in_bag_reward,
-            "pokedoll_in_bag_reward": pokedoll_in_bag_reward,
-            "bicycle_in_bag_reward": bicycle_in_bag_reward,
-            "special_location_rewards": special_location_rewards,
-            "can_reward": can_reward,
-        }
-        total_reward = 0
-        # Print each reward component and its value
-        for component, value in reward_components.items():
-            if isinstance(value, (int, float)):
-                # print(f"{component}: {value}")
-                total_reward += value
-        # Apply the reward scale
-        total_reward *= reward_scale
-        # print(f"\n\nTotal Reward: {total_reward}")
-        return total_reward
-
-
-
-    def reset(self, seed=None, options=None, max_episode_steps=20480, reward_scale = 4):
+    def reset(self, seed=None, options=None, max_episode_steps=20480, reward_scale=4.0):
         """Resets the game. Seeding is NOT supported"""
         # BET ADDED
-        # # Logic for loading envs based off % milestone achievement
-        # # Decision to load a state based on "files_to_load"
-        # self.assess_milestone_completion_percentage()
-        # # Only 1 env should execute the below:
-        # if self.env_id == 0:
-        #     # Updates shared dict (self.shared_data) with milestones dict for each env
-        #     self.assess_milestone_completion_percentage()
-        #     # Returns average completion percentage for each milestone across all envs
-        #     self.overall_progress = self.compute_overall_progress(self.shared_data)
-        #     # Compares self.overall_progress and self.milestone_threshold dicts
-        #     self.actions_required = self.assess_progress_for_action(self.overall_progress, self.milestone_threshold_dict)
-        #     # Assesses states for loading using saved state files/dirs
-        #     self.sort_and_assess_envs_for_loading(self.shared_data, self.actions_required, 96)
-                    
-        # # Only loads a state if env was determined to need loading
-        # self.load_state_from_tuple()
-                
         self.init_caches()
         assert len(self.all_events_string) == 2552, f'len(self.all_events_string): {len(self.all_events_string)}'
         self.rewarded_events_string = '0' * 2552
@@ -2082,10 +1298,17 @@ class Environment(Base):
         
         if self.reset_count == 0:
             load_pyboy_state(self.game, self.load_first_state())
-        if self.stuck_count == 3:
-            self.stuck_count = 0
-            load_pyboy_state(self.game, self.load_first_state())
             
+        dice_roll = random.randint(1, 1000)
+
+        # Check conditions to decide which state to load
+        if dice_roll == 999:
+            # If dice roll is exactly 999, load the first state (0.1% chance)
+            load_pyboy_state(self.game, self.load_first_state())
+        elif dice_roll > 800:
+            # If dice roll is greater than 800 but not 999, load the last state (19.9% chance)
+            load_pyboy_state(self.game, self.load_last_state())
+
         if self.save_video:
             base_dir = self.s_path
             base_dir.mkdir(parents=True, exist_ok=True)
@@ -2103,8 +1326,7 @@ class Environment(Base):
         self.max_episode_steps = max_episode_steps
         self.reward_scale = reward_scale
         self.last_reward = None
-        self.max_pokeball_count = 0
-        self.pokeball_rewards = 0
+
         self.prev_map_n = None
         self.init_hidden_obj_mem()
         self.max_events = 0
@@ -2118,6 +1340,7 @@ class Environment(Base):
         self.last_party_size = 1
         self.hm_count = 0
         self.cut = 0
+        
         self.cut_coords = {}
         self.cut_tiles = {}
         self.cut_state = deque(maxlen=3)
@@ -2129,8 +1352,8 @@ class Environment(Base):
         self.seen_pokemon = np.zeros(152, dtype=np.uint8)
         self.caught_pokemon = np.zeros(152, dtype=np.uint8)
         self.moves_obtained = np.zeros(0xA5, dtype=np.uint8)
-        self.town = 1
-        
+        self.used_cut_reward = 0 #reset to encourage exploration during initial training
+        self.novel_menu_reward = 0 #same reset concept applied though skeptical we will move this once bot is consistently using cut to a non reset value. 
         self.seen_coords_no_reward = set()
         self._all_events_string = ''
         self.agent_stats = []
@@ -2159,7 +1382,7 @@ class Environment(Base):
         self.total_reward = 0
         self.rewarded_coords = set()
         self.museum_punishment = deque(maxlen=10)
-        self.rewarded_distances = {}
+        self.rewarded_distances = {} 
         
         # BET ADDED A BUNCH
         self._cut_badge = False
@@ -2175,19 +1398,16 @@ class Environment(Base):
         self.update_seen_map_dict()
 
         self.used_cut_coords_dict = {}
+     	
+     	#PiQ ADDED A LITTLE
+        self.gym3_lock_1 = 0
+        self.sound_header_1 = 0
+        self.sound_header_2 = 0
+        self.map_track = 0
+        self.audio_bank = 0
+        self.interesting_sound = 0
         
-        # BET ADDED TESTING TODAY
-        self.shaped_hideout_reward = 0
-        self.shaped_map_reward = 0
-        
-        self.l_seen_coords = set()
-        self.expl = 0
-        self.celadon_tree_reward = 0
-        self.celadon_tree_reward_counter = 0
-        self.bonus_dynamic_reward_multiplier = self.initial_multiplier_value  # Reset the dynamic bonus multiplier
-        self.steps_since_last_new_location = 0  # Reset step counter for new locations
-        self.exploration_reward = 0
-        
+
         return self.render(), {}
 
     def step(self, action, fast_video=True):
@@ -2196,89 +1416,315 @@ class Environment(Base):
         
         if self.save_video:
             self.add_video_frame()
-            
- 
+        # Sounds
+        self.sound_header_1 = self.game.get_memory_value(0xC0EC)
+        self.sound_header_2 = self.game.get_memory_value(0xC0ED)
+        self.map_track = self.game.get_memory_value(0xD35B)
+        self.audio_bank = self.game.get_memory_value(0xD359)
+        self.interesting_sound = self.game.get_memory_value(0xC04F)
+        
+        # Exploration reward
         r, c, map_n = ram_map.position(self.game)
-
-
-        self.celadon_gym_4_tree_reward(action)
+        self.seen_coords.add((r, c, map_n))
         
         # Call nimixx api
         self.api.process_game_states() 
         current_bag_items = self.api.items.get_bag_item_ids()
         self.update_cut_badge()
         self.update_surf_badge()
+        self.update_last_10_map_ids()
+        self.update_last_10_coords()
+        self.update_seen_map_dict()
+        
+        # print(f'\ngame states: {self.api.process_game_states()},\n bag_items: {current_bag_items},\n {self.update_pokedex()}\n')    
 
-        self.is_new_map(r, c, map_n)
-        self.check_bag_items(current_bag_items)
-        self.get_location_shaped_reward()         # Calculate the dynamic bonus reward for this step
-        self.get_exploration_reward(map_n)
-        self.get_level_reward()
-        self.get_healing_and_death_reward()
-        self.get_badges_reward()
-        self.get_bill_reward()
-        self.get_bill_capt_reward()
-        self.get_hm_reward()
-        self.get_cut_reward()
-        self.get_tree_distance_reward(r, c, map_n)   
-        self.get_respawn_reward()
-        self.get_money()
-        self.get_opponent_level_reward()
-        self.get_event_reward()
+        if 'Lemonade' in current_bag_items:
+            self.has_lemonade_in_bag = True
+            self.has_lemonade_in_bag_reward = 20
+        if 'Silph Scope' in current_bag_items:
+            self.has_silph_scope_in_bag = True
+            self.has_silph_scope_in_bag_reward = 20
+        if 'Lift Key' in current_bag_items:
+            self.has_lift_key_in_bag = True
+            self.has_lift_key_in_bag_reward = 20
+        if 'Poke Doll' in current_bag_items:
+            self.has_pokedoll_in_bag = True
+            self.has_pokedoll_in_bag_reward = 20
+        if 'Bicycle' in current_bag_items:
+            self.has_bicycle_in_bag = True
+            self.has_bicycle_in_bag_reward = 20
         
-        
-        # Special location rewards
-        self.get_dojo_reward()
-        self.get_hideout_reward()
-        self.get_silph_co_events_reward()
-        self.get_dojo_events_reward()
-        self.get_hideout_events_reward()
-        self.get_poke_tower_events_reward()
-        self.get_gym_events_reward()
-        # Gym 3 for cans that have no switch (to encourage can checking)
-        self.get_can_reward()
-        self.get_lock_1_use_reward()
-         
-        # Cut check
-        self.BET_cut_check()
-        self.cut_check(action)
+        # BET: increase exploration after cutting at least 1 tree to encourage exploration vs cut perseveration
+        exploration_reward = 0.02 * len(self.seen_coords) if self.used_cut < 1 else 0.1 * len(self.seen_coords) # 0.2 doesn't work (too high??)
 
-        # Other functions
-        self.update_pokedex()
-        self.update_moves_obtained()         
-        self.count_gym_3_lock_1_use()    
-        
-        # Calculate some rewards
-        self.calculate_menu_rewards()
-        self.calculate_cut_coords_and_tiles_rewards()
-        self.calculate_seen_caught_pokemon_moves()
-        
-        # # Share data for milestone completion % assessment
-        # self.assess_milestone_completion_percentage()
-        	#Gym_3_Unlock
+        self.update_heat_map(r, c, map_n)
+        if map_n != self.prev_map_n:
+            self.used_cut_on_map_n = 0
+            self.prev_map_n = map_n
+            if map_n not in self.seen_maps:
+                self.seen_maps.add(map_n)
+            # self.save_state()
+
+        # Level reward
+        party_size, party_levels = ram_map.party(self.game)
+        self.max_level_sum = max(self.max_level_sum, sum(party_levels))
+        if self.max_level_sum < 50: # 30
+            level_reward = 1 * self.max_level_sum
+        else:
+            level_reward = 50 + (self.max_level_sum - 50) / 4 # 30
             
-        self.pokeball_reward()    
+        # Healing and death rewards
+        hp = ram_map.hp(self.game)
+        hp_delta = hp - self.last_hp
+        party_size_constant = party_size == self.last_party_size
+        if hp_delta > 0.2 and party_size_constant and not self.is_dead:
+            self.total_healing += hp_delta
+        if hp <= 0 and self.last_hp > 0:
+            self.death_count += 1
+            self.death_count_per_episode += 1
+            self.is_dead = True
+        elif hp > 0.01:  # TODO: Check if this matters
+            self.is_dead = False
+        self.last_hp = hp
+        self.last_party_size = party_size
+        death_reward = 0
+        healing_reward = self.total_healing
+
+        # Badge reward
+        badges = ram_map.badges(self.game)
+        badges_reward = 20 * badges # 5 BET
+
+        # Save Bill
+        bill_state = ram_map.saved_bill(self.game)
+        bill_reward = 5 * bill_state
+        
+        # HM reward
+        hm_count = ram_map.get_hm_count(self.game)
+        
+        # Save state on obtaining hm
+        if hm_count >= 1 and self.hm_count == 0:
+            self.save_state()
+            self.hm_count = 1
+        hm_reward = hm_count * 10
+        cut_rew = self.cut * 20 # 10 works - 2 might be better, though Set to 20 because we don't survive retraining, we're going to consider sepcial case but lets set what this
+        
+        # BET ADDED TREE REWARDS
+        glob_r, glob_c = game_map.local_to_global(r, c, map_n)
+
+        tree_distance_reward = self.detect_and_reward_trees((glob_r, glob_c), map_n, vision_range=5)
+        # tree_distance_reward = self.compute_tree_reward((glob_r, glob_c), TREE_POSITIONS_GRID_GLOBAL, map_n) * cut_rew
+
+        # Money 
+        money = ram_map.money(self.game)
+        
+        # Opponent level reward
+        max_opponent_level = max(ram_map.opponent(self.game))
+        self.max_opponent_level = max(self.max_opponent_level, max_opponent_level)
+        opponent_level_reward = 0.006 * self.max_opponent_level # previously disabled BET
+        
+        # Event rewards
+        events = ram_map.events(self.game)
+        self.max_events = max(self.max_events, events)
+        event_reward = self.max_events * 3
+
+        # Dojo reward
+        dojo_reward = ram_map_leanke.dojo(self.game)
+        defeated_fighting_dojo = 1 * int(ram_map.read_bit(self.game, 0xD7B1, 0))
+        got_hitmonlee = 3 * int(ram_map.read_bit(self.game, 0xD7B1, 6))
+        got_hitmonchan = 3 * int(ram_map.read_bit(self.game, 0xD7B1, 7))
+        
+        # # Hideout reward
+        # hideout_reward = ram_map_leanke.hideout(self.game)
+        
+        # SilphCo rewards
+        silph_co_events_reward = self.calculate_event_rewards(
+            ram_map_leanke.monitor_silph_co_events(self.game), 
+            base_reward=10, reward_increment=2, reward_multiplier=1)
+        
+        # Dojo rewards
+        dojo_events_reward = self.calculate_event_rewards(
+            ram_map_leanke.monitor_dojo_events(self.game), 
+            base_reward=10, reward_increment=2, reward_multiplier=1)
+        
+        # Hideout rewards
+        hideout_events_reward = self.calculate_event_rewards(
+            ram_map_leanke.monitor_hideout_events(self.game),
+            base_reward=10, reward_increment=2, reward_multiplier=1)
+
+        # Poketower rewards
+        poke_tower_events_reward = self.calculate_event_rewards(
+            ram_map_leanke.monitor_poke_tower_events(self.game),
+            base_reward=10, reward_increment=2, reward_multiplier=1)
+
+        # Gym rewards
+        #Gym_3_Unlock
         if ram_map.get_gym_3_lock_1(self.game) == 1:  # The first gym lock is unlocked
-            self.gym3_lock_piq += 1 * 2 ** (-1 * self.gym3_lock_piq) * 3
+            self.gym3_lock_1 += (1 * 2 ** (-1 * self.gym3_lock_1)) * 3
         
         if ram_map.get_gym_3_lock_2(self.game) == 1:  # The second gym lock is unlocked
-    	    self.gym3_lock_piq = 15
+    	    self.gym3_lock_1 = 20
         
-        # Final reward calculation
-        self.calculate_reward()
-        reward, self.last_reward = self.subtract_previous_reward_v1(self.last_reward, self.reward)
+        gym3_events_reward = self.gym3_lock_1
+        gym4_events_reward = self.calculate_event_rewards(
+            ram_map_leanke.monitor_gym4_events(self.game),
+            base_reward=10, reward_increment=2, reward_multiplier=1)
+        gym5_events_reward = self.calculate_event_rewards(
+            ram_map_leanke.monitor_gym5_events(self.game),
+            base_reward=10, reward_increment=2, reward_multiplier=1)
+        gym6_events_reward = self.calculate_event_rewards(
+            ram_map_leanke.monitor_gym6_events(self.game),
+            base_reward=10, reward_increment=2, reward_multiplier=1)
+        gym7_events_reward = self.calculate_event_rewards(
+            ram_map_leanke.monitor_gym7_events(self.game),
+            base_reward=10, reward_increment=2, reward_multiplier=1)
+
+        # Cut check
+        # 0xCFC6 - wTileInFrontOfPlayer
+        # 0xCFCB - wUpdateSpritesEnabled
+        if ram_map.mem_val(self.game, 0xD057) == 0: # is_in_battle if 1
+            if self.cut == 1:
+                player_direction = self.game.get_memory_value(0xC109)
+                x, y, map_id = self.get_game_coords()  # x, y, map_id
+                if player_direction == 0:  # down
+                    coords = (x, y + 1, map_id)
+                if player_direction == 4:
+                    coords = (x, y - 1, map_id)
+                if player_direction == 8:
+                    coords = (x - 1, y, map_id)
+                if player_direction == 0xC:
+                    coords = (x + 1, y, map_id)
+                self.cut_state.append(
+                    (
+                        self.game.get_memory_value(0xCFC6),
+                        self.game.get_memory_value(0xCFCB),
+                        self.game.get_memory_value(0xCD6A),
+                        self.game.get_memory_value(0xD367),
+                        self.game.get_memory_value(0xD125),
+                        self.game.get_memory_value(0xCD3D),
+                    )
+                )
+                if tuple(list(self.cut_state)[1:]) in CUT_SEQ:
+                    self.cut_coords[coords] = 10 # 10
+                    self.cut_tiles[self.cut_state[-1][0]] = 1
+                elif self.cut_state == CUT_GRASS_SEQ:
+                    self.cut_coords[coords] = 0.001
+                    self.cut_tiles[self.cut_state[-1][0]] = 1
+                elif deque([(-1, *elem[1:]) for elem in self.cut_state]) == CUT_FAIL_SEQ:
+                    self.cut_coords[coords] = 0.001
+                    self.cut_tiles[self.cut_state[-1][0]] = 1
+
+                if int(ram_map.read_bit(self.game, 0xD803, 0)):
+                    if self.check_if_in_start_menu():
+                        self.seen_start_menu += 1
+                        self.novel_menu_reward += 1 * 2 ** (-1 * self.seen_start_menu)
+                    if self.check_if_in_pokemon_menu():
+                        self.seen_pokemon_menu += 1
+                        self.novel_menu_reward += 1 * 2 ** (-1 * self.seen_pokemon_menu)
+                    if self.check_if_in_stats_menu():
+                        self.seen_stats_menu += 1
+                        self.novel_menu_reward += 1 * 2 ** (-1 * self.seen_stats_menu)
+                    if self.check_if_in_bag_menu():
+                        self.seen_bag_menu += 1
+                        self.novel_menu_reward += 1 * 2 ** (-1 * self.seen_bag_menu)
+                    if self.check_if_cancel_bag_menu(action):
+                        self.seen_cancel_bag_menu += 1
+                        self.novel_menu_reward += 1 * 2 ** (-1 * self.seen_cancel_bag_menu )
+
+        # Misc
+        self.update_pokedex()
+        self.update_moves_obtained()
+
+        bill_capt_rew = ram_map.bill_capt(self.game)
+        
+	
+
+        
+        # Cut check 2 - BET ADDED: used cut on tree
+        if ram_map.used_cut(self.game) == 61:
+            ram_map.write_mem(self.game, 0xCD4D, 00) # address, byte to write
+            if (map_n, r, c) in self.used_cut_coords_set:
+                pass
+            else:
+                self.used_cut += 1
+                self.used_cut_reward += 1 * 2 ** (-1 * self.used_cut_reward)
+    
+        used_cut_on_tree_rew = 0 # should be 0 to prevent cut abuse
+        start_menu = self.seen_start_menu * 0.01
+        pokemon_menu = self.seen_pokemon_menu * 0.1
+        stats_menu = self.seen_stats_menu * 0.1
+        bag_menu = self.seen_bag_menu * 0.1
+        cut_coords = sum(self.cut_coords.values()) * 1.0
+        cut_tiles = len(self.cut_tiles) * 1.0
+        that_guy = (start_menu + pokemon_menu + stats_menu + bag_menu)
+        
+    
+        seen_pokemon_reward = self.reward_scale * sum(self.seen_pokemon)
+        caught_pokemon_reward = self.reward_scale * sum(self.caught_pokemon) * 5
+        moves_obtained_reward = self.reward_scale * sum(self.moves_obtained)
+
+        piq_cut_reward = self.used_cut_reward
+
+        reward = self.reward_scale * (
+            event_reward
+            + bill_capt_rew
+            + seen_pokemon_reward
+            + caught_pokemon_reward
+            + moves_obtained_reward
+            + bill_reward
+            + hm_reward
+            + level_reward
+            + death_reward
+            + badges_reward
+            + healing_reward
+            + exploration_reward 
+            + cut_rew
+            + that_guy / 2 # reward for cutting an actual tree (but not erika's trees)
+            + piq_cut_reward 
+            + cut_coords # reward for cutting anything at all
+            + cut_tiles # reward for cutting a cut tile, e.g. a patch of grass
+            + tree_distance_reward * 0.1 # 1 is too high # 0.25 # 0.5
+            + dojo_reward * 5
+            # + hideout_reward * 5
+            + self.has_lemonade_in_bag_reward
+            + self.has_silph_scope_in_bag_reward
+            + self.has_lift_key_in_bag_reward
+            + self.has_pokedoll_in_bag_reward
+            + self.has_bicycle_in_bag_reward
+            + (dojo_events_reward + silph_co_events_reward + 
+               hideout_events_reward + poke_tower_events_reward + 
+               gym3_events_reward + gym4_events_reward + 
+               gym5_events_reward + gym6_events_reward + 
+               gym7_events_reward)
+            + (gym3_events_reward + gym4_events_reward +
+               gym5_events_reward + gym6_events_reward +
+               gym7_events_reward)
+        )
+
+        # Subtract previous reward
+        # TODO: Don't record large cumulative rewards in the first place
+        if self.last_reward is None:
+            reward = 0
+            self.last_reward = 0
+        else:
+            nxt_reward = reward
+            reward -= self.last_reward
+            self.last_reward = nxt_reward
 
         info = {}
         done = self.time >= self.max_episode_steps
 
+
         if self.save_video and done:
             self.full_frame_writer.close()
+            
+        self.save_state()
         
         # if done:
         #     self.save_state()
         if done or self.time % 10000 == 0:   
+            levels = [self.game.get_memory_value(a) for a in [0xD18C, 0xD1B8, 0xD1E4, 0xD210, 0xD23C, 0xD268]]       
             info = {
-                "pokemon_exploration_map": self.counts_map,
+                "pokemon_exploration_map": self.counts_map, # self.explore_map, #  self.counts_map, 
                 "stats": {
                     "step": self.time,
                     "x": c,
@@ -2287,8 +1733,8 @@ class Environment(Base):
                     # "map_location": self.get_map_location(map_n),
                     # "max_map_progress": self.max_map_progress,
                     "pcount": int(self.game.get_memory_value(0xD163)),
-                    "levels": self.get_party_levels(),
-                    "levels_sum": sum(self.get_party_levels()),
+                    "levels": levels,
+                    "levels_sum": sum(levels),
                     # "ptypes": self.read_party(),
                     # "hp": self.read_hp_fraction(),
                     "coord": np.sum(self.counts_map),  # np.sum(self.seen_global_coords),
@@ -2297,14 +1743,14 @@ class Environment(Base):
                     # "hidden_obj": sum(self.seen_hidden_objs.values()),
                     "deaths": self.death_count,
                     "deaths_per_episode": self.death_count_per_episode,
-                    "badges": float(self.badges),
+                    "badges": float(badges),
                     "self.badge_count": self.badge_count,
-                    "badge_1": float(self.badges >= 1),
-                    "badge_2": float(self.badges >= 2),
-                    "badge_3": float(self.badges >= 3),
-                    "badge_4": float(self.badges >= 4),
-                    "badge_5": float(self.badges >= 5),
-                    "badge_6": float(self.badges >= 6),
+                    "badge_1": float(badges >= 1),
+                    "badge_2": float(badges >= 2),
+                    "badge_3": float(badges >= 3),
+                    "badge_4": float(badges >= 4),
+                    "badge_5": float(badges >= 5),
+                    "badge_6": float(badges >= 6),
                     "events": len(self.past_events_string),
                     # "action_hist": self.action_hist,
                     # "caught_pokemon": int(sum(self.caught_pokemon)),
@@ -2320,897 +1766,116 @@ class Environment(Base):
                     "got_hm01": int(ram_map.read_bit(self.game, 0xD803, 0)),
                     "rubbed_captains_back": int(ram_map.read_bit(self.game, 0xD803, 1)),
                     # "taught_cut": int(self.check_if_party_has_cut()),
-                    "cut_coords": sum(self.cut_coords.values()),
+                    # "cut_coords": sum(self.cut_coords.values()),
                     'pcount': int(ram_map.mem_val(self.game, 0xD163)), 
                     # 'visited_pokecenterr': self.get_visited_pokecenter_reward(),
                     # 'rewards': int(self.total_reward) if self.total_reward is not None else 0,
                     "maps_explored": len(self.seen_maps),
-                    "party_size": self.get_party_size(),
-                    "highest_pokemon_level": max(self.get_party_levels()),
-                    "total_party_level": sum(self.get_party_levels()),
+                    "party_size": party_size,
+                    "highest_pokemon_level": max(party_levels),
+                    "total_party_level": sum(party_levels),
                     "deaths": self.death_count,
                     # "ss_anne_obtained": ss_anne_obtained,
-                    "event": self.get_events(),
-                    "money": self.get_money(),
+                    "event": events,
+                    "money": money,
                     "pokemon_exploration_map": self.counts_map,
                     "seen_npcs_count": len(self.seen_npcs),
                     "seen_pokemon": np.sum(self.seen_pokemon),
                     "caught_pokemon": np.sum(self.caught_pokemon),
                     "moves_obtained": np.sum(self.moves_obtained),
                     "hidden_obj_count": len(self.seen_hidden_objs),
-                    "bill_saved": self.bill_state,
-                    "hm_count": self.hm_count,
+                    "bill_saved": bill_state,
+                    "hm_count": hm_count,
                     "cut_taught": self.cut,
-                    "badge_1": float(self.badges >= 1),
-                    "badge_2": float(self.badges >= 2),
-                    "badge_3": float(self.badges >= 3),
+                    "badge_1": float(badges >= 1),
+                    "badge_2": float(badges >= 2),
+                    "badge_3": float(badges >= 3),
                     "maps_explored": np.sum(self.seen_maps),
-                    "party_size": self.get_party_size(),
-                    "bill_capt": (self.bill_capt_reward/5),
-                    'cut_coords': self.cut_coords,
-                    'cut_tiles': self.cut_tiles,
-                    'bag_menu': self.seen_bag_menu,
-                    'stats_menu': self.seen_stats_menu,
-                    'pokemon_menu': self.seen_pokemon_menu,
-                    'start_menu': self.seen_start_menu,
+                    "party_size": party_size,
+                    "bill_capt": (bill_capt_rew/5),
+                    'cut_coords': cut_coords,
+                    'cut_tiles': cut_tiles,
+                    'bag_menu': bag_menu,
+                    'stats_menu': stats_menu,
+                    'pokemon_menu': pokemon_menu,
+                    'start_menu': start_menu,
                     'used_cut': self.used_cut,
                     'state_loaded_instead_of_resetting_in_game': self.state_loaded_instead_of_resetting_in_game,
-                    'defeated_fighting_dojo': self.defeated_fighting_dojo,
-                    'got_hitmonlee': self.got_hitmonlee,
-                    'got_hitmonchan': self.got_hitmonchan,  
-                    'self.bonus_dynamic_reward_multiplier': self.bonus_dynamic_reward_multiplier,
-                    'self.bonus_dynamic_reward_increment': self.bonus_dynamic_reward_increment,
-                    'len(self.dynamic_bonus_expl_seen_coords)': len(self.dynamic_bonus_expl_seen_coords),
-                    'len(self.seen_coords)': len(self.seen_coords),
-                    
-                                    
-                    "silph_co_events_aggregate": {
-                        **ram_map_leanke.monitor_silph_co_events(self.game),
-                    },
-                    "dojo_events_aggregate": {
-                        **ram_map_leanke.monitor_dojo_events(self.game),  
-                    },
-                    "hideout_events_aggregate": {
-                        **ram_map_leanke.monitor_hideout_events(self.game),
-                    },
-                    "poke_tower_events_aggregate": {
-                        **ram_map_leanke.monitor_poke_tower_events(self.game),
-                    },
-                    "gym_events": {
-                            "gym_3_events": { 
-                        **ram_map_leanke.monitor_gym3_events(self.game),
-                        "gym_3_lock_1_use_count": self.lock_1_use_counter,
-                        "interacted_with_a_wrong_can": self.can_reward,
-                        }, 
-                            "gym_4_events": {  
-                        **ram_map_leanke.monitor_gym4_events(self.game),  
-                        }, 
-                            "gym_5_events": {  
-                        **ram_map_leanke.monitor_gym5_events(self.game),
-                        },  
-                            "gym_6_events": {  
-                        **ram_map_leanke.monitor_gym6_events(self.game), 
-                        }, 
-                            "gym_7_events": {  
-                        **ram_map_leanke.monitor_gym7_events(self.game), 
-                        },
-                    },
+                    'defeated_fighting_dojo': defeated_fighting_dojo,
+                    'got_hitmonlee': got_hitmonlee,
+                    'got_hitmonchan': got_hitmonchan,
                 },
                 "reward": {
-                    "delta": self.reward,
-                    "event": self.event_reward,
-                    "level": self.level_reward,
-                    "opponent_level": self.get_opponent_level_reward(),
-                    "death": self.death_reward,
-                    "badges": self.badges_reward,
-                    "bill_saved_reward": self.bill_reward,
-                    "bill_capt": self.bill_capt_reward,
-                    "hm_count_reward": self.hm_reward,
+                    "delta": reward,
+                    "event": event_reward,
+                    "level": level_reward,
+                    "opponent_level": opponent_level_reward,
+                    "death": death_reward,
+                    "badges": badges_reward,
+                    "bill_saved_reward": bill_reward,
+                    "hm_count_reward": hm_reward,
                     # "ss_anne_done_reward": ss_anne_state_reward,
-                    "healing": self.healing_reward,
-                    "exploration": self.exploration_reward,
+                    "healing": healing_reward,
+                    "exploration": exploration_reward,
                     # "explore_npcs_reward": explore_npcs_reward,
-                    "seen_pokemon_reward": self.seen_pokemon_reward,
-                    "caught_pokemon_reward": self.caught_pokemon_reward,
-                    "moves_obtained_reward": self.moves_obtained_reward,
+                    "seen_pokemon_reward": seen_pokemon_reward,
+                    "caught_pokemon_reward": caught_pokemon_reward,
+                    "moves_obtained_reward": moves_obtained_reward,
                     # "hidden_obj_count_reward": explore_hidden_objs_reward,
-                    "used_cut_reward": self.cut_reward,
-                    "cut_coords_reward": self.cut_coords_reward,
-                    "cut_tiles_reward": self.cut_tiles_reward,
+                    "used_cut_reward": cut_rew,
                     # "used_cut_on_tree": used_cut_on_tree_rew,
-                    "tree_distance_reward": self.tree_distance_reward,
-                    "dojo_reward_old": self.dojo_reward,
-                    # "hideout_reward": self.hideout_reward,
+                    "tree_distance_reward": tree_distance_reward,
+                    "dojo_reward_old": dojo_reward,
+                    # "hideout_reward": hideout_reward,
                     "has_lemonade_in_bag_reward": self.has_lemonade_in_bag_reward,
-                    "has_fresh_water_in_bag_reward": self.has_fresh_water_in_bag_reward,
-                    "has_soda_pop_in_bag_reward": self.has_soda_pop_in_bag_reward,
                     "has_silph_scope_in_bag_reward": self.has_silph_scope_in_bag_reward,
                     "has_lift_key_in_bag_reward": self.has_lift_key_in_bag_reward,
                     "has_pokedoll_in_bag_reward": self.has_pokedoll_in_bag_reward,
                     "has_bicycle_in_bag_reward": self.has_bicycle_in_bag_reward,
-                    "respawn_reward": self.len_respawn_reward,
-                    "celadon_tree_reward": self.celadon_tree_reward,
-                    "self.bonus_dynamic_reward": self.bonus_dynamic_reward,
-                    "self.shaped_exploration_reward": self.shaped_exploration_reward,
-                    
-                    "special_location_rewards": {
-                        "detailed_rewards_silph_co": {
-                            **self.calculate_event_rewards_detailed(
-                                ram_map_leanke.monitor_silph_co_events(self.game), 
-                                base_reward=10, reward_increment=2, reward_multiplier=1),
-                        },
-                        "detailed_rewards_dojo": {
-                            **self.calculate_event_rewards_detailed(
-                                ram_map_leanke.monitor_dojo_events(self.game), 
-                                base_reward=10, reward_increment=2, reward_multiplier=1),
-                        },
-                        "detailed_rewards_hideout": {
-                            **self.calculate_event_rewards_detailed(
-                                ram_map_leanke.monitor_hideout_events(self.game), 
-                                base_reward=10, reward_increment=2, reward_multiplier=1),
-                        },
-                        "detailed_rewards_poke_tower": {
-                            **self.calculate_event_rewards_detailed(
-                                ram_map_leanke.monitor_poke_tower_events(self.game), 
-                                base_reward=10, reward_increment=2, reward_multiplier=1),
-                        },
-                        "detailed_rewards_gyms": {
-                            "gym_3_detailed_rewards": {
-                            **self.calculate_event_rewards_detailed(
-                                ram_map_leanke.monitor_gym3_events(self.game), 
-                                base_reward=10, reward_increment=2, reward_multiplier=1),
-                            "gym_3_lock_1_use_reward": self.lock_1_use_reward,
-                            "interacted_with_a_wrong_can_reward": self.can_reward,
-                        },
-                            "gym_4_detailed_rewards": {
-                            **self.calculate_event_rewards_detailed(
-                                ram_map_leanke.monitor_gym4_events(self.game), 
-                                base_reward=10, reward_increment=2, reward_multiplier=1),
-                        },
-                            "gym_5_detailed_rewards": {
-                            **self.calculate_event_rewards_detailed(
-                                ram_map_leanke.monitor_gym5_events(self.game), 
-                                base_reward=10, reward_increment=2, reward_multiplier=1),
-                        },
-                            "gym_6_detailed_rewards": {
-                            **self.calculate_event_rewards_detailed(
-                                ram_map_leanke.monitor_gym6_events(self.game), 
-                                base_reward=10, reward_increment=2, reward_multiplier=1),
-                        },
-                            "gym_7_detailed_rewards": { 
-                            **self.calculate_event_rewards_detailed(
-                                ram_map_leanke.monitor_gym7_events(self.game), 
-                                base_reward=10, reward_increment=2, reward_multiplier=1),
-                        },
-                        },
-                        },
                 },
-
-                }
-            
-                # "pokemon_exploration_map": self.counts_map, # self.explore_map, #  self.counts_map,
+                "detailed_rewards_silph_co": {
+                    **self.calculate_event_rewards_detailed(
+                        ram_map_leanke.monitor_silph_co_events(self.game), 
+                        base_reward=10, reward_increment=2, reward_multiplier=1),
+                },
+                "detailed_rewards_dojo": {
+                    **self.calculate_event_rewards_detailed(
+                        ram_map_leanke.monitor_dojo_events(self.game), 
+                        base_reward=10, reward_increment=2, reward_multiplier=1),
+                },
+                "detailed_rewards_hideout": {
+                    **self.calculate_event_rewards_detailed(
+                        ram_map_leanke.monitor_hideout_events(self.game), 
+                        base_reward=10, reward_increment=2, reward_multiplier=1),
+                },
+                "detailed_rewards_poke_tower": {
+                    **self.calculate_event_rewards_detailed(
+                        ram_map_leanke.monitor_poke_tower_events(self.game), 
+                        base_reward=10, reward_increment=2, reward_multiplier=1),
+                },
+                "detailed_rewards_gyms": {
+                    "gym_3_detailed_rewards": self.gym3_lock_1, 
                 
-            # d, total_sum = self.print_dict_items_and_sum(info['reward'])
-            # print(f'\ntotal_sum={total_sum}\n')
-            
-        return self.render(), reward, done, done, info
-    def base_rewards(self):
-        reward = ( 
-                self.pokeball_rewards
-                + self.event_reward 
-                + self.caught_pokemon_reward * 2
-                + self.moves_obtained_reward        
-                + self.level_reward  
-                + self.healing_reward
-                + self.exploration_reward
-                + self.pokeball_rewards
-                + self.seen_pokemon_reward
-                + self.len_respawn_reward
-                + self.badges_reward
-        )
-        return reward
-    def all_bill_rewards(self):
-        reward = (
-                + self.bill_capt_reward
-                + self.bill_reward  
-        )
-        return reward
-    def use_cut_rewards(self):
-        reward = (
-                + self.novel_menu_reward
-                #+ self.that_guy_reward / 2
-                + self.cut_coords_reward
-                + self.cut_tiles_reward
-                + self.tree_distance_reward * 0.6
-        
-        )
-    def get_cut_rewards(self):
-        reward = (
-                + self.hm_reward
-                + self.cut_reward     
-        )
-        return reward
-    def all_gym3_rewards(self):
-        reward = (
-                + self.can_reward
-                + self.lock_1_use_reward
-                + self.gym3_lock_piq
-        
-        )
-        return reward
-    
-    def breadcrumb_to_gym_2(self):
-        reward = (
-                + (ram_map.map_n(self.game) == 12) # Route 1
-                + (ram_map.map_n(self.game) == 1) * 2 #Veridian and Buildings
-                + (ram_map.map_n(self.game) == 41) * 2 
-                + (ram_map.map_n(self.game) == 42) * 2
-                + (ram_map.map_n(self.game) == 43) * 2
-                + (ram_map.map_n(self.game) == 44) * 2
-                + (ram_map.map_n(self.game) == 45) * 2
-                + (ram_map.map_n(self.game) == 13) * 2# Route 2
-                + (ram_map.map_n(self.game) == 50) * 2# Southgate
-                + (ram_map.map_n(self.game) == 51) * 3# Forest
-                + (ram_map.map_n(self.game) == 47) * 3 # Northgate
-            
-                + (ram_map.map_n(self.game) == 2) * 4 #Pewter City 
-					            
-                #Pewter Buildings and Gym (34,35,36,37,38,39,3A)
-                + (ram_map.map_n(self.game) == 52) * 4
-                + (ram_map.map_n(self.game) == 53) * 4
-                + (ram_map.map_n(self.game) == 54) * 4
-                + (ram_map.map_n(self.game) == 55) * 4
-                + (ram_map.map_n(self.game) == 56) * 4
-                + (ram_map.map_n(self.game) == 57) * 4
-                + (ram_map.map_n(self.game) == 58) * 4
-                #Route 3 + buildings and Mt Moon first level
-                + (ram_map.map_n(self.game) == 14) * 5# Route 3
-                + (ram_map.map_n(self.game) == 68) * 6# Mt Moon Pokecenter
-                + (ram_map.map_n(self.game) == 59) * 6# Mt Moon First Map
-                + (ram_map.map_n(self.game) == 60) * 6# Mt Moon Hallways
-                + (ram_map.map_n(self.game) == 61) * 6# Mt Moon Second Map
-                + (ram_map.map_n(self.game) == 15) * 6# Route 4 Small Part of this is outside Mt Moon on other side
-                + (ram_map.map_n(self.game) == 3) * 11# Cerulean Big Bonus for Navigating Cave
-                #Cerulean Buildings Pre Bill: Badge House, Trade House, Mart, Pokecenter, Gym, Bikeshop (In wrong order): E6, 3F, 40, 41, 42, 43
-                #+ (ram_map.map_n(self.game) == 230) * 11   disabled to not get trapped
-                + (ram_map.map_n(self.game) == 62) * 11
-                + (ram_map.map_n(self.game) == 63) * 11
-                + (ram_map.map_n(self.game) == 64) * 11
-                
-                + (ram_map.map_n(self.game) == 66) * 11
-                + (ram_map.map_n(self.game) == 67) * 11
-                + (ram_map.map_n(self.game) == 65) * 12 #Gym 2
-        
-        )
-        return reward
-
-    def breadcrumb_to_cerulean_pokecenter(self):
-        reward = (
-                + (ram_map.map_n(self.game) == 12) # Route 1
-                + (ram_map.map_n(self.game) == 1) * 2 #Veridian and Buildings
-                + (ram_map.map_n(self.game) == 41) * 2 
-                + (ram_map.map_n(self.game) == 42) * 2
-                + (ram_map.map_n(self.game) == 43) * 2
-                + (ram_map.map_n(self.game) == 44) * 2
-                + (ram_map.map_n(self.game) == 45) * 2
-                + (ram_map.map_n(self.game) == 13) * 2# Route 2
-                + (ram_map.map_n(self.game) == 50) * 2# Southgate
-                + (ram_map.map_n(self.game) == 51) * 3# Forest
-                + (ram_map.map_n(self.game) == 47) * 3 # Northgate
-            
-                + (ram_map.map_n(self.game) == 2) * 4 #Pewter City 
-					            
-                #Pewter Buildings and Gym (34,35,36,37,38,39,3A)
-                + (ram_map.map_n(self.game) == 52) * 4
-                + (ram_map.map_n(self.game) == 53) * 4
-                + (ram_map.map_n(self.game) == 54) * 4
-                + (ram_map.map_n(self.game) == 55) * 4
-                + (ram_map.map_n(self.game) == 56) * 4
-                + (ram_map.map_n(self.game) == 57) * 4
-                + (ram_map.map_n(self.game) == 58) * 4
-                #Route 3 + buildings and Mt Moon first level
-                + (ram_map.map_n(self.game) == 14) * 5# Route 3
-                + (ram_map.map_n(self.game) == 68) * 6# Mt Moon Pokecenter
-                + (ram_map.map_n(self.game) == 59) * 6# Mt Moon First Map
-                + (ram_map.map_n(self.game) == 60) * 6# Mt Moon Hallways
-                + (ram_map.map_n(self.game) == 61) * 6# Mt Moon Second Map
-                + (ram_map.map_n(self.game) == 15) * 6# Route 4 Small Part of this is outside Mt Moon on other side
-                + (ram_map.map_n(self.game) == 3) * 11# Cerulean Big Bonus for Navigating Cave
-                #Cerulean Pokecenter
-                + (ram_map.map_n(self.game) == 64) * 13
-        
-        )
-        return reward
-    
-    def breadcrumb_to_bill(self):
-        reward = (
-                + (ram_map.map_n(self.game) == 12) # Route 1
-                + (ram_map.map_n(self.game) == 1) * 2 #Veridian and Buildings
-                + (ram_map.map_n(self.game) == 41) * 2 
-                + (ram_map.map_n(self.game) == 42) * 2
-                + (ram_map.map_n(self.game) == 43) * 2
-                + (ram_map.map_n(self.game) == 44) * 2
-                + (ram_map.map_n(self.game) == 45) * 2
-                + (ram_map.map_n(self.game) == 13) * 2# Route 2
-                + (ram_map.map_n(self.game) == 50) * 2# Southgate
-                + (ram_map.map_n(self.game) == 51) * 3# Forest
-                + (ram_map.map_n(self.game) == 47) * 3 # Northgate
-            
-                + (ram_map.map_n(self.game) == 2) * 4 #Pewter City 
-					            
-                #Pewter Buildings and Gym (34,35,36,37,38,39,3A)
-                + (ram_map.map_n(self.game) == 52) * 4
-                + (ram_map.map_n(self.game) == 53) * 4
-                + (ram_map.map_n(self.game) == 54) * 4
-                + (ram_map.map_n(self.game) == 55) * 4
-                + (ram_map.map_n(self.game) == 56) * 4
-                + (ram_map.map_n(self.game) == 57) * 4
-                + (ram_map.map_n(self.game) == 58) * 4
-                #Route 3 + buildings and Mt Moon first level
-                + (ram_map.map_n(self.game) == 14) * 5# Route 3
-                + (ram_map.map_n(self.game) == 68) * 6# Mt Moon Pokecenter
-                + (ram_map.map_n(self.game) == 59) * 6# Mt Moon First Map
-                + (ram_map.map_n(self.game) == 60) * 6# Mt Moon Hallways
-                + (ram_map.map_n(self.game) == 61) * 6# Mt Moon Second Map
-                + (ram_map.map_n(self.game) == 15) * 6# Route 4 Small Part of this is outside Mt Moon on other side
-                + (ram_map.map_n(self.game) == 3) * 12# Cerulean Big Bonus for Navigating Cave
-                #Cerulean Buildings Pre Bill: Badge House, Trade House, Mart, Pokecenter, Gym, Bikeshop (In wrong order): E6, 3F, 40, 41, 42, 43
-                # + (ram_map.map_n(self.game) == 230) * 11 Disabled to not get trapped
-                + (ram_map.map_n(self.game) == 63) * 11
-                + (ram_map.map_n(self.game) == 64) * 12 #pokecenter
-                + (ram_map.map_n(self.game) == 62) * 12
-                
-                + (ram_map.map_n(self.game) == 66) * 11
-               #  + (ram_map.map_n(self.game) == 67) * 12 #mart Disabled
-                + (ram_map.map_n(self.game) == 65) * 10 #Gym 2 we want to leave
-                #Route 24, 25, Bill's House
-                + (ram_map.map_n(self.game) == 35) * 13
-                + (ram_map.map_n(self.game) == 36) * 13
-                + (ram_map.map_n(self.game) == 88) * 15
-        
-        )
-        return reward
-
-    def breadcrumb_to_SS_Anne(self):
-        reward = (
-                + (ram_map.map_n(self.game) == 12) # Route 1
-                + (ram_map.map_n(self.game) == 1) * 2 #Veridian and Buildings
-                + (ram_map.map_n(self.game) == 41) * 2 
-                + (ram_map.map_n(self.game) == 42) * 2
-                + (ram_map.map_n(self.game) == 43) * 2
-                + (ram_map.map_n(self.game) == 44) * 2
-                + (ram_map.map_n(self.game) == 45) * 2
-                + (ram_map.map_n(self.game) == 13) * 2# Route 2
-                + (ram_map.map_n(self.game) == 50) * 2# Southgate
-                + (ram_map.map_n(self.game) == 51) * 3# Forest
-                + (ram_map.map_n(self.game) == 47) * 3 # Northgate
-            
-                + (ram_map.map_n(self.game) == 2) * 4 #Pewter City 
-					            
-                #Pewter Buildings and Gym (34,35,36,37,38,39,3A)
-                + (ram_map.map_n(self.game) == 52) * 4
-                + (ram_map.map_n(self.game) == 53) * 4
-                + (ram_map.map_n(self.game) == 54) * 4
-                + (ram_map.map_n(self.game) == 55) * 4
-                + (ram_map.map_n(self.game) == 56) * 4
-                + (ram_map.map_n(self.game) == 57) * 4
-                + (ram_map.map_n(self.game) == 58) * 4
-                #Route 3 + buildings and Mt Moon first level
-                + (ram_map.map_n(self.game) == 14) * 5# Route 3
-                + (ram_map.map_n(self.game) == 68) * 6# Mt Moon Pokecenter
-                + (ram_map.map_n(self.game) == 59) * 6# Mt Moon First Map
-                + (ram_map.map_n(self.game) == 60) * 6# Mt Moon Hallways
-                + (ram_map.map_n(self.game) == 61) * 6# Mt Moon Second Map
-                + (ram_map.map_n(self.game) == 15) * 6# Route 4 Small Part of this is outside Mt Moon on other side
-            
-            
-
-                #Route 24, 25, Bill's House
-                + (ram_map.map_n(self.game) == 35) * 15
-                + (ram_map.map_n(self.game) == 36) * 15
-                + (ram_map.map_n(self.game) == 88) * 13 #Bills
-            
-                + (ram_map.map_n(self.game) == 3) * 16# We're Back!
-                #Cerulean Buildings Pre Bill: Badge House, Trade House, Mart, Pokecenter, Gym, Bikeshop (In wrong order): E6, 3F, 40, 41, 42, 43
-                # + (ram_map.map_n(self.game) == 230) * 11 Disabled to not get trapped
-                + (ram_map.map_n(self.game) == 63) * 11
-                + (ram_map.map_n(self.game) == 64) * 16 #pokecenter
-                
-                + (ram_map.map_n(self.game) == 66) * 11
-                + (ram_map.map_n(self.game) == 62) * 16 #trashed house
-                # + (ram_map.map_n(self.game) == 67) * 16 #mart Disabled
-                + (ram_map.map_n(self.game) == 65) * 11 #Gym 2
-                
-                + (ram_map.map_n(self.game) == 16) * 17# Route 5 
-                + (ram_map.map_n(self.game) == 72) * 17 #Pokemon Daycare
-                + (ram_map.map_n(self.game) == 71) * 18 #Enter Underground Path
-                + (ram_map.map_n(self.game) == 119) * 19 #Underground Path
-                + (ram_map.map_n(self.game) == 74) * 20 # Exit Underground Path
-                + (ram_map.map_n(self.game) == 17) * 21 #Route 6
-                + (ram_map.map_n(self.game) == 5) * 22 #VERMILION CITY
-                + (ram_map.map_n(self.game) == 89) * 23 #VERMILION CITY Pokegym
-            #todo continue to ss anne
-
-        
-        )
-        return reward
-    
-    def breadcrumb_to_vermilion_pokecenter(self):
-        reward = (
-                + (ram_map.map_n(self.game) == 12) # Route 1
-                + (ram_map.map_n(self.game) == 1) * 2 #Veridian and Buildings
-                + (ram_map.map_n(self.game) == 41) * 2 
-                + (ram_map.map_n(self.game) == 42) * 2
-                + (ram_map.map_n(self.game) == 43) * 2
-                + (ram_map.map_n(self.game) == 44) * 2
-                + (ram_map.map_n(self.game) == 45) * 2
-                + (ram_map.map_n(self.game) == 13) * 2# Route 2
-                + (ram_map.map_n(self.game) == 50) * 2# Southgate
-                + (ram_map.map_n(self.game) == 51) * 3# Forest
-                + (ram_map.map_n(self.game) == 47) * 3 # Northgate
-            
-                + (ram_map.map_n(self.game) == 2) * 4 #Pewter City 
-					            
-                #Pewter Buildings and Gym (34,35,36,37,38,39,3A)
-                + (ram_map.map_n(self.game) == 52) * 4
-                + (ram_map.map_n(self.game) == 53) * 4
-                + (ram_map.map_n(self.game) == 54) * 4
-                + (ram_map.map_n(self.game) == 55) * 4
-                + (ram_map.map_n(self.game) == 56) * 4
-                + (ram_map.map_n(self.game) == 57) * 4
-                + (ram_map.map_n(self.game) == 58) * 4
-                #Route 3 + buildings and Mt Moon first level
-                + (ram_map.map_n(self.game) == 14) * 5# Route 3
-                + (ram_map.map_n(self.game) == 68) * 6# Mt Moon Pokecenter
-                + (ram_map.map_n(self.game) == 59) * 6# Mt Moon First Map
-                + (ram_map.map_n(self.game) == 60) * 6# Mt Moon Hallways
-                + (ram_map.map_n(self.game) == 61) * 6# Mt Moon Second Map
-                + (ram_map.map_n(self.game) == 15) * 6# Route 4 Small Part of this is outside Mt Moon on other side
-            
-            
-
-                #Route 24, 25, Bill's House
-                + (ram_map.map_n(self.game) == 35) * 15
-                + (ram_map.map_n(self.game) == 36) * 15
-                + (ram_map.map_n(self.game) == 88) * 13 #Bills
-            
-                + (ram_map.map_n(self.game) == 3) * 16# We're Back!
-                #Cerulean Buildings Pre Bill: Badge House, Trade House, Mart, Pokecenter, Gym, Bikeshop (In wrong order): E6, 3F, 40, 41, 42, 43
-                # + (ram_map.map_n(self.game) == 230) * 11 #disabled to not get trapped
-                + (ram_map.map_n(self.game) == 63) * 11
-                + (ram_map.map_n(self.game) == 64) * 16 #pokecenter
-               
-                + (ram_map.map_n(self.game) == 66) * 11
-                + (ram_map.map_n(self.game) == 62) * 16 #trashed house
-                # + (ram_map.map_n(self.game) == 67) * 16 #mart Disabled
-                + (ram_map.map_n(self.game) == 65) * 11 #Gym 2
-                
-                + (ram_map.map_n(self.game) == 16) * 17# Route 5 
-                + (ram_map.map_n(self.game) == 72) * 17 #Pokemon Daycare
-                + (ram_map.map_n(self.game) == 71) * 18 #Enter Underground Path
-                + (ram_map.map_n(self.game) == 119) * 19 #Underground Path
-                + (ram_map.map_n(self.game) == 74) * 20 # Exit Underground Path
-                + (ram_map.map_n(self.game) == 17) * 21 #Route 6
-                + (ram_map.map_n(self.game) == 5) * 22 #VERMILION CITY
-                + (ram_map.map_n(self.game) == 89) * 25 #VERMILION CITY Pokecenter
-           
-
-        
-        )
-        return reward  
-    
-    def breadcrumb_to_veridian_forest(self):
-        reward = (
-                + (ram_map.map_n(self.game) == 12) # Route 1
-                + (ram_map.map_n(self.game) == 1) * 2 #Veridian and Buildings
-                + (ram_map.map_n(self.game) == 41) * 2 
-                + (ram_map.map_n(self.game) == 42) * 2
-                + (ram_map.map_n(self.game) == 43) * 2
-                + (ram_map.map_n(self.game) == 44) * 2
-                + (ram_map.map_n(self.game) == 45) * 2
-                + (ram_map.map_n(self.game) == 13) * 2# Route 2
-                + (ram_map.map_n(self.game) == 50) * 2# Southgate
-                + (ram_map.map_n(self.game) == 51) * 2# Forest
-        )
-        return reward
-    
-    def breadcrumb_to_gym_1(self):
-        reward = (
-            	+ (ram_map.map_n(self.game) == 12) # Route 1
-                + (ram_map.map_n(self.game) == 1) * 2 #Veridian and Buildings
-                + (ram_map.map_n(self.game) == 41) * 2 
-                + (ram_map.map_n(self.game) == 42) * 2
-                + (ram_map.map_n(self.game) == 43) * 2
-                + (ram_map.map_n(self.game) == 44) * 2
-                + (ram_map.map_n(self.game) == 45) * 2
-                + (ram_map.map_n(self.game) == 13) * 2# Route 2
-                + (ram_map.map_n(self.game) == 50) * 2# Southgate
-                + (ram_map.map_n(self.game) == 51) * 3# Forest
-                + (ram_map.map_n(self.game) == 47) * 3 # Northgate
-            
-                + (ram_map.map_n(self.game) == 2) * 4 #Pewter City 
-					            
-                #Pewter Buildings and Gym (34,35,36,37,38,39,3A)
-                + (ram_map.map_n(self.game) == 52) * 4
-                + (ram_map.map_n(self.game) == 53) * 4
-
-                + (ram_map.map_n(self.game) == 55) * 4
-                + (ram_map.map_n(self.game) == 56) * 4
-                + (ram_map.map_n(self.game) == 57) * 4
-                + (ram_map.map_n(self.game) == 58) * 4
-                + (ram_map.map_n(self.game) == 54) * 5 #Gym 1
-        
-        )
-        return reward
-    
-    def breadcrumb_to_mt_moon(self):
-        reward = (
-                + (ram_map.map_n(self.game) == 12) # Route 1
-                + (ram_map.map_n(self.game) == 1) * 2 #Veridian and Buildings
-                + (ram_map.map_n(self.game) == 41) * 2 
-                + (ram_map.map_n(self.game) == 42) * 2
-                + (ram_map.map_n(self.game) == 43) * 2
-                + (ram_map.map_n(self.game) == 44) * 2
-                + (ram_map.map_n(self.game) == 45) * 2
-                + (ram_map.map_n(self.game) == 13) * 2# Route 2
-                + (ram_map.map_n(self.game) == 50) * 2# Southgate
-                + (ram_map.map_n(self.game) == 51) * 4# Forest
-                + (ram_map.map_n(self.game) == 47) * 4 # Northgate
-                + (ram_map.map_n(self.game) == 2) * 4 #Pewter City           
-                #Pewter Buildings and Gym (34,35,36,37,38,39,3A)
-                + (ram_map.map_n(self.game) == 52) * 4
-                + (ram_map.map_n(self.game) == 53) * 4
-                + (ram_map.map_n(self.game) == 54) * 4 #The Gym
-                + (ram_map.map_n(self.game) == 55) * 4
-                + (ram_map.map_n(self.game) == 56) * 4
-                + (ram_map.map_n(self.game) == 57) * 4
-                + (ram_map.map_n(self.game) == 58) * 4
-                #Route 3 + buildings and Mt Moon first level
-                + (ram_map.map_n(self.game) == 14) * 4# Route 3
-                + (ram_map.map_n(self.game) == 15) * 4# Route 4 a small piece of this is on the Veridian side
-                + (ram_map.map_n(self.game) == 68) * 4# Mt Moon Pokecenter
-                + (ram_map.map_n(self.game) == 59) * 4# Mt Moon First Map	
-        
-        )
-        return reward
-    
-    
-    def breadcrumb_to_mt_moon_pokecenter(self):
-        reward = (
-                + (ram_map.map_n(self.game) == 12) # Route 1
-                + (ram_map.map_n(self.game) == 1) * 2 #Veridian and Buildings
-                + (ram_map.map_n(self.game) == 41) * 2 
-                + (ram_map.map_n(self.game) == 42) * 2
-                + (ram_map.map_n(self.game) == 43) * 2
-                + (ram_map.map_n(self.game) == 44) * 2
-                + (ram_map.map_n(self.game) == 45) * 2
-                + (ram_map.map_n(self.game) == 13) * 2# Route 2
-                + (ram_map.map_n(self.game) == 50) * 2# Southgate
-                + (ram_map.map_n(self.game) == 51) * 4# Forest
-                + (ram_map.map_n(self.game) == 47) * 4 # Northgate
-                + (ram_map.map_n(self.game) == 2) * 4 #Pewter City           
-                #Pewter Buildings and Gym (34,35,36,37,38,39,3A)
-                + (ram_map.map_n(self.game) == 52) * 4
-                + (ram_map.map_n(self.game) == 53) * 4
-                + (ram_map.map_n(self.game) == 54) * 4 #The Gym
-                + (ram_map.map_n(self.game) == 55) * 4
-                + (ram_map.map_n(self.game) == 56) * 4
-                + (ram_map.map_n(self.game) == 57) * 4
-                + (ram_map.map_n(self.game) == 58) * 4
-                #Route 3 + buildings and Mt Moon first level
-                + (ram_map.map_n(self.game) == 14) * 4# Route 3
-                + (ram_map.map_n(self.game) == 15) * 5# Route 4 a small piece of this is on the Pewter side
-                + (ram_map.map_n(self.game) == 68) * 6# Mt Moon Pokecenter
-
-        
-        )
-        return reward
-    
-    def calculate_reward(self):
-        if self.badges == 0 and self.reset_count > 15: 
-            if max(self.get_party_levels()) < 1: # not in use Set to 1 for Quick Disable # or np.sum(self.caught_pokemon) < 4: #Let's hide in the wood and kill boars  
-                self.reward = self.reward_scale * (
-                + self.breadcrumb_to_veridian_forest()
-                + self.base_rewards()  
-            )
-            else:
-                self.reward = self.reward_scale * (
-                + 5
-                + self.breadcrumb_to_gym_1()
-                + self.base_rewards()
-            )				   
-        elif self.badges == 0 and self.reset_count <= 15: 
-            if ram_map.mem_val(self.game, 0xD719) == 0: #Let's see if we can teach the AI how to save and heal   
-                self.reward = self.reward_scale * (
-                + 5 #current reward 
-                + (ram_map.map_n(self.game) == 41) * 2 #PokeCenter
-                + self.base_rewards()
-            )
-            elif ram_map.mem_val(self.game, 0xD719) == 1: #Let's see if we can teach the AI how to save and heal
-                self.reward = self.reward_scale * (
-                + 7 #current reward + 2 points for saving
-                + (ram_map.map_n(self.game) == 58) * 2 #PokeCenter 2
-                + self.base_rewards()  
-            )
-            else: #Let's try and learn to play the game maybe update this to learn to buy pokeballs
-                self.reward = self.reward_scale * (
-                + 9 #points for learning to save
-                + self.base_rewards()
-            )		
-        elif self.badges == 1: # and self.reset_count > 25: #disabled for now 
-            if max(self.get_party_levels()) < 1:#Set to 1 for Quick Disable # or np.sum(self.caught_pokemon) < 7: #Let's hide in the wood and kill boars 
-                self.reward = self.reward_scale * (
-                + 15			
-                + self.base_rewards()
-                + self.breadcrumb_to_mt_moon()
-            )
-            elif ram_map.mem_val(self.game, 0xD719) <= 2:
-                self.reward = self.reward_scale * (
-                + 15			
-                + self.base_rewards()
-                + self.breadcrumb_to_mt_moon_pokecenter()
-            )
-            elif ram_map.mem_val(self.game, 0xD719) != 3 and ram_map.mem_val(self.game, 0xD719) != 5:
-                self.reward = self.reward_scale * (
-                + 17			
-                + self.base_rewards()
-                + self.breadcrumb_to_cerulean_pokecenter()
-            )
-            else:   
-                #if ram_map.read_bit(self.game, 0xD7F3, 2) != 1: #First Viridian Forest Trainer, Needed because we return to route 2 after forest
-                self.reward = self.reward_scale * (
-                + 20
-                + self.breadcrumb_to_gym_2()
-                + self.base_rewards()
-            )	
-        elif self.badges == 2: # We Need to subdevide this for each nmap and define objectives top of head is bill stuff, beat gym2 get cut
-            if self.bill_state < 1: #Objective is get SS Anne Ticket
-                self.reward = self.reward_scale * (
-                + 25 #NOTHING REMOVED THIS STILL SHOULDN'T BE NEEDED
-                + self.all_bill_rewards()
-                + self.base_rewards()
-                + self.breadcrumb_to_bill()
-
-            )    
-         
-                
-            elif self.bill_state > 0 and self.cut < 1 : #Objective is learn cut 
-                if ram_map.mem_val(self.game, 0xD719) != 5:
-                    self.reward = self.reward_scale * (
-                    + 25 #NOTHING REMOVED THIS STILL SHOULDN'T BE NEEDED
-                    + self.all_bill_rewards()
-                    + self.base_rewards()
-                    + ram_map.read_bit(self.game, 0xD7F3, 2) * 5
-                    + self.breadcrumb_to_vermilion_pokecenter()
-
-                )   
-                    #todo get the bike
-                else:
-                
-                    self.reward = self.reward_scale * (
-                    + (ram_map.map_n(self.game) == 101) * 10 #we no want to leave captains room until we learn cut
-                    + 50 #NOTHING REMOVED THIS STILL SHOULDN'T BE NEEDED
-                    + self.all_bill_rewards()
-                    #+ self.used_cut_reward    why is this here?  Make sure not needed
-                    + self.get_cut_rewards()
-                    + self.base_rewards()
-     
-            )
-            elif self.bill_state > 0 and self.cut > 0 : #Objective is beat gym3 
-                self.reward = self.reward_scale * (
-                + 100 #Potentially Needed to ofset leaving captains room and replace Bill Rewards
-                + (ram_map.map_n(self.game) == 5) * 10 #stay in the area
-                + (ram_map.map_n(self.game) == 89) #Pokecenter incase we want to heal
-                + (ram_map.map_n(self.game) == 92) * 20 #stay in the gym until we beat it
-                + self.used_cut_reward
-                + self.base_rewards()
-                + self.get_cut_rewards()
-                + self.use_cut_rewards()
-                + self.all_gym3_rewards()
-        )    
-        elif self.badges == 3: #todo
-            self.reward = self.reward_scale * (
-            + self.pokeball_rewards
-            + 200 #todo
-            + self.event_reward * 5
-            + self.bill_capt_reward
-            + self.seen_pokemon_reward
-            + self.caught_pokemon_reward * 5
-            + self.moves_obtained_reward
-            + self.bill_reward
-            + self.used_cut_reward
-            + self.hm_reward
-            + self.level_reward
-            + self.death_reward
-            + self.badges_reward
-            + self.healing_reward
-            + self.exploration_reward
-            + self.cut_reward
-            + self.novel_menu_reward
-            + self.cut_coords_reward
-            + self.cut_tiles_reward
-            + self.tree_distance_reward * 0.6
-            + self.dojo_reward * 5
-            + self.hideout_reward * 5
-            + self.has_lemonade_in_bag_reward
-            + self.has_fresh_water_in_bag_reward
-            + self.has_soda_pop_in_bag_reward
-            + self.has_silph_scope_in_bag_reward
-            + self.has_lift_key_in_bag_reward
-            + self.has_pokedoll_in_bag_reward
-            + self.has_bicycle_in_bag_reward
-            + (self.dojo_events_reward + self.silph_co_events_reward +
-            self.hideout_events_reward + self.poke_tower_events_reward +
-            self.gym3_events_reward + self.gym4_events_reward +
-            self.gym5_events_reward + self.gym6_events_reward +
-            self.gym7_events_reward)
-            + (self.gym3_events_reward + self.gym4_events_reward +
-            self.gym5_events_reward + self.gym6_events_reward +
-            self.gym7_events_reward)
-            + self.can_reward
-            + self.len_respawn_reward
-            + self.lock_1_use_reward
-            + self.celadon_tree_reward
-            + self.gym3_lock_piq    
-        )
-        elif self.badges >= 3: #todo
-            self.reward = self.reward_scale * (
-            + 200 #todo
-            + self.pokeball_rewards
-            + self.event_reward * 5
-            + self.bill_capt_reward
-            + self.seen_pokemon_reward
-            + self.caught_pokemon_reward * 5
-            + self.moves_obtained_reward
-            + self.bill_reward
-            + self.used_cut_reward
-            + self.hm_reward
-            + self.level_reward
-            + self.death_reward
-            + self.badges_reward
-            + self.healing_reward
-            + self.exploration_reward
-            + self.cut_reward
-            + self.novel_menu_reward
-            + self.cut_coords_reward
-            + self.cut_tiles_reward
-            + self.tree_distance_reward * 0.6
-            + self.dojo_reward * 5
-            + self.hideout_reward * 5
-            + self.has_lemonade_in_bag_reward
-            + self.has_fresh_water_in_bag_reward
-            + self.has_soda_pop_in_bag_reward
-            + self.has_silph_scope_in_bag_reward
-            + self.has_lift_key_in_bag_reward
-            + self.has_pokedoll_in_bag_reward
-            + self.has_bicycle_in_bag_reward
-            + (self.dojo_events_reward + self.silph_co_events_reward +
-            self.hideout_events_reward + self.poke_tower_events_reward +
-            self.gym3_events_reward + self.gym4_events_reward +
-            self.gym5_events_reward + self.gym6_events_reward +
-            self.gym7_events_reward)
-            + (self.gym3_events_reward + self.gym4_events_reward +
-            self.gym5_events_reward + self.gym6_events_reward +
-            self.gym7_events_reward)
-            + self.can_reward
-            + self.len_respawn_reward
-            + self.lock_1_use_reward
-            + self.celadon_tree_reward
-            + self.gym3_lock_piq   
-        )
-        else: #default to something
-            self.reward = self.reward_scale * ( #todo
-            + self.base_rewards()  
-        )
-
-    
-
-    '''
-    # THIS SECTION CONTAINS UNUSED FNS
-    # Not currently used
-    def prepare_info(self):
-        levels = [self.game.get_memory_value(a) for a in [0xD18C, 0xD1B8, 0xD1E4, 0xD210, 0xD23C, 0xD268]]
-        badges = self.get_badges_reward()
-        party_size, party_levels = self.get_level_reward()
-        money = self.get_money()
-        opponent_level_reward = self.get_opponent_level_reward()
-
-        # Updating map exploration and interaction details
-        self.update_map_id_to_furthest_visited()
-        current_bag_items = self.api.items.get_bag_item_ids()
-        self.check_bag_items(current_bag_items)
-        r, c, map_n = ram_map.position(self.game)
-        exploration_reward = self.get_exploration_reward(map_n)
-        events = self.get_all_events_reward()
-
-        # Aggregating detailed rewards for various events and locations
-        detailed_rewards_silph_co = self.calculate_event_rewards_detailed(self.get_silph_co_events_reward(), 10, 2, 1)
-        detailed_rewards_dojo = self.calculate_event_rewards_detailed(self.get_dojo_events_reward(), 10, 2, 1)
-        detailed_rewards_hideout = self.calculate_event_rewards_detailed(self.get_hideout_events_reward(), 10, 2, 1)
-        detailed_rewards_poke_tower = self.calculate_event_rewards_detailed(self.get_poke_tower_events_reward(), 10, 2, 1)
-        detailed_rewards_gyms = {
-            "gym_3_detailed_rewards": self.calculate_event_rewards_detailed(self.get_gym_events_reward()['gym_3'], 10, 2, 1),
-            "gym_4_detailed_rewards": self.calculate_event_rewards_detailed(self.get_gym_events_reward()['gym_4'], 10, 2, 1),
-            "gym_5_detailed_rewards": self.calculate_event_rewards_detailed(self.get_gym_events_reward()['gym_5'], 10, 2, 1),
-            "gym_6_detailed_rewards": self.calculate_event_rewards_detailed(self.get_gym_events_reward()['gym_6'], 10, 2, 1),
-            "gym_7_detailed_rewards": self.calculate_event_rewards_detailed(self.get_gym_events_reward()['gym_7'], 10, 2, 1),
-        }
-        return {
-            levels, badges, party_size, party_levels, money, opponent_level_reward, r, c, map_n, exploration_reward, events,
-            detailed_rewards_silph_co, detailed_rewards_dojo, detailed_rewards_hideout, detailed_rewards_poke_tower,
-            detailed_rewards_gyms
-        }
-    
-    # Not currently used    
-    def construct_info(self):
-        (levels, badges, party_size, party_levels, money, opponent_level_reward, r, c, map_n, exploration_reward, events,
-            detailed_rewards_silph_co, detailed_rewards_dojo, detailed_rewards_hideout, detailed_rewards_poke_tower,
-            detailed_rewards_gyms) = self.prepare_info()
-        return {
-        "pokemon_exploration_map": self.counts_map,
-        "stats": {
-            "step": self.time,
-            "x": c,
-            "y": r,
-            "map": map_n,
-            "pcount": int(self.game.get_memory_value(0xD163)),
-            "levels": levels,
-            "levels_sum": sum(levels),
-            "coord": np.sum(self.counts_map),
-            "deaths": self.death_count,
-            "deaths_per_episode": self.death_count_per_episode,
-            "badges": badges,
-            "self.badge_count": self.badge_count,
-            "badge_1": float(badges >= 1),
-            "badge_2": float(badges >= 2),
-            "badge_3": float(badges >= 3),
-            "badge_4": float(badges >= 4),
-            "badge_5": float(badges >= 5),
-            "badge_6": float(badges >= 6),
-            "events": len(self.past_events_string),
-            "opponent_level": self.max_opponent_level,
-            "met_bill": int(ram_map.read_bit(self.game, 0xD7F1, 0)),
-            "used_cell_separator_on_bill": int(ram_map.read_bit(self.game, 0xD7F2, 3)),
-            "ss_ticket": int(ram_map.read_bit(self.game, 0xD7F2, 4)),
-            "met_bill_2": int(ram_map.read_bit(self.game, 0xD7F2, 5)),
-            "bill_said_use_cell_separator": int(ram_map.read_bit(self.game, 0xD7F2, 6)),
-            "left_bills_house_after_helping": int(ram_map.read_bit(self.game, 0xD7F2, 7)),
-            "got_hm01": int(ram_map.read_bit(self.game, 0xD803, 0)),
-            "rubbed_captains_back": int(ram_map.read_bit(self.game, 0xD803, 1)),
-            "maps_explored": len(self.seen_maps),
-            "party_size": party_size,
-            "highest_pokemon_level": max(party_levels),
-            "total_party_level": sum(party_levels),
-            "money": money,
-            "pokemon_exploration_map": self.counts_map,
-            "seen_npcs_count": len(self.seen_npcs),
-            "seen_pokemon": np.sum(self.seen_pokemon),
-            "caught_pokemon": np.sum(self.caught_pokemon),
-            "moves_obtained": np.sum(self.moves_obtained),
-            "hidden_obj_count": len(self.seen_hidden_objs),
-            "bill_saved": self.bill_state,
-            "hm_count": self.hm_count,
-            "cut_taught": self.cut,
-            'cut_coords': self.cut_coords,
-            'cut_tiles': self.cut_tiles,
-            'bag_menu': self.seen_bag_menu,
-            'stats_menu': self.seen_stats_menu,
-            'pokemon_menu': self.seen_pokemon_menu,
-            'start_menu': self.seen_start_menu,
-            'used_cut': self.used_cut,
-            'state_loaded_instead_of_resetting_in_game': self.state_loaded_instead_of_resetting_in_game,
-            'defeated_fighting_dojo': self.defeated_fighting_dojo,
-            'got_hitmonlee': self.got_hitmonlee,
-            'got_hitmonchan': self.got_hitmonchan,
-        },
-        "special_rewards": {
-        "reward": self.reward,
-        "exploration_reward": exploration_reward,
-        "detailed_rewards_silph_co": detailed_rewards_silph_co,
-        "detailed_rewards_dojo": detailed_rewards_dojo,
-        "detailed_rewards_hideout": detailed_rewards_hideout,
-        "detailed_rewards_poke_tower": detailed_rewards_poke_tower,
-        "detailed_rewards_gyms": detailed_rewards_gyms,
+                    "gym_4_detailed_rewards": {
+                    **self.calculate_event_rewards_detailed(
+                        ram_map_leanke.monitor_gym4_events(self.game), 
+                        base_reward=10, reward_increment=2, reward_multiplier=1),
+                },
+                    "gym_5_detailed_rewards": {
+                    **self.calculate_event_rewards_detailed(
+                        ram_map_leanke.monitor_gym5_events(self.game), 
+                        base_reward=10, reward_increment=2, reward_multiplier=1),
+                },
+                    "gym_6_detailed_rewards": {
+                    **self.calculate_event_rewards_detailed(
+                        ram_map_leanke.monitor_gym6_events(self.game), 
+                        base_reward=10, reward_increment=2, reward_multiplier=1),
+                },
+                    "gym_7_detailed_rewards": { 
+                    **self.calculate_event_rewards_detailed(
+                        ram_map_leanke.monitor_gym7_events(self.game), 
+                        base_reward=10, reward_increment=2, reward_multiplier=1),
+                },
                 },
                 "silph_co_events_aggregate": {
                     **ram_map_leanke.monitor_silph_co_events(self.game),
@@ -3240,289 +1905,8 @@ class Environment(Base):
                         "gym_7_events": {  
                     **ram_map_leanke.monitor_gym7_events(self.game), 
                     },
-    }}
-
+                },
+                # "pokemon_exploration_map": self.counts_map, # self.explore_map, #  self.counts_map, 
+            }
         
-    # Maybe doesn't work well?
-    # Not currently used
-    def get_exploration_reward_big(self, map_n):
-        try:
-            # Define groups of maps as lists for easier checking
-            special_maps = self.pokehideout + self.saffron_city + [self.fighting_dojo] + [self.vermilion_gym]
-            # Check if the game state indicates a special condition
-            if int(ram_map.read_bit(self.game, 0xD81B, 7)) == 0:
-                # Determine the base exploration reward based on the map
-                if map_n in special_maps:
-                    base_reward = 0.2
-                else:
-                    base_reward = 0.02 if self.used_cut < 1 else 0.15
-                self.exploration_reward = base_reward * len(self.seen_coords)
-                # Specific rewards for map 201 (Rocket Hideout Level 3)
-                if map_n == 201:
-                    # Process each seen coordinate
-                    for coord in self.seen_coords:
-                        r, c = coord[:2]  # Assuming seen_coords stores tuples like (row, column, map_n)
-                        # Direct coordinate matches with specific rewards
-                        direct_coords = [(22, 13), (22, 14), (21, 14), (21, 15), (20, 15), (19, 15), (11, 12), (18, 10)]
-                        big_reward_coords = [(13, 12), (13, 13), (13, 14), (14, 12), (15, 12), (16, 9), (16, 10), (17, 9), (23, 13), (24, 13), (25, 13)]
-                        biggest_reward_coord = (18, 11)                    
-                        # Checking and applying rewards
-                        if (r, c) in direct_coords:
-                            self.exploration_reward += 0.3
-                        if (r, c) in big_reward_coords:
-                            self.exploration_reward += 0.5
-                        if (r, c) == biggest_reward_coord:
-                            self.exploration_reward += 1.0                    
-                        # Ranges with specific rewards
-                        range_checks = [
-                            (lambda r, c: r == 9 and 13 <= c <= 20, 0.5),
-                            (lambda r, c: 9 <= r <= 11 and c == 13, 0.5),
-                            (lambda r, c: 11 <= r <= 13 and c == 10, 0.5),
-                            (lambda r, c: 14 <= r <= 16 and c == 12, 0.5),
-                            (lambda r, c: 19 <= r <= 26 and c == 19, 0.3),
-                            (lambda r, c: 25 <= r <= 26 and 13 <= c <= 19, 0.3),
-                        ]
-                        # Apply rewards for ranges
-                        for check, reward in range_checks:
-                            if check(r, c):
-                                self.exploration_reward += reward
-            elif map_n == 202:
-                # Adjust the exploration reward for map 202 specifically, if necessary
-                self.exploration_reward += 0.5
-                        # Extra reward for exploring specific coordinates around trees
-            elif map_n == 6:
-                for coord in self.seen_coords:
-                    if any(self.in_coord_range(coord, ranges) for ranges in self.celadon_tree_attraction_coords.values()):
-                        self.exploration_reward += 0.45  # Additional reward for each coordinate in the specified ranges
-                        # print(f'BONUS reward for coord ({r},{c}) on {map_n}')
-            else:
-                # Default exploration reward logic for other cases
-                self.exploration_reward = 0.02 * len(self.seen_coords) if self.used_cut < 1 else 0.15 * len(self.seen_coords)
-        except:
-            if int(ram_map.read_bit(self.game, 0xD81B, 7)) == 0:
-                if map_n in self.poketower:
-                    self.exploration_reward = 0
-                elif map_n in self.pokehideout:
-                    self.exploration_reward = (0.2 * len(self.seen_coords))
-                elif map_n in self.saffron_city:
-                    self.exploration_reward = (0.2 * len(self.seen_coords))
-                elif map_n in self.fighting_dojo:
-                    self.exploration_reward = (0.2 * len(self.seen_coords))
-                elif map_n in self.vermilion_gym:
-                    self.exploration_reward = (0.2 * len(self.seen_coords))
-                else:
-                    # BET: increase exploration after cutting at least 1 tree to encourage exploration vs cut perseveration
-                    self.exploration_reward = 0.02 * len(self.seen_coords) if self.used_cut < 1 else 0.15 * len(self.seen_coords) # 0.2 doesn't work (too high??)
-            else:
-                # BET: increase exploration after cutting at least 1 tree to encourage exploration vs cut perseveration
-                self.exploration_reward = 0.02 * len(self.seen_coords) if self.used_cut < 1 else 0.15 * len(self.seen_coords) # 0.2 doesn't work (too high??)
-    '''        
-
-    def save_all_states_v3(self, is_failed=False):
-        # Assume self.save_state_dir is properly initialized in Base class init
-        # self.save_state_dir = Path(__file__).parent / "save_states/"
-        # self.save_state_dir.mkdir(exist_ok=True)       
-        # Constructing state directory path
-        datetime_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.state_dir = self.save_state_dir / Path(f'event_reward_{self.event_reward}') / f'env_id_{self.env_id}'        
-        self.state_dir.mkdir(parents=True, exist_ok=True)
-        self.state_file_path = self.state_dir / f"env_id_{self.env_id}_{datetime_str}_state.pkl"
-        self.pyboy_state_file_path = self.state_dir / f"env_id_{self.env_id}_{datetime_str}_state.state" 
-        # Explicitly exclude non-serializable variables
-        excluded_vars = ['game', 'screen', 'api']
-        state = {key: value for key, value in vars(self).items() if key not in excluded_vars}
-        try:
-            with open(self.state_file_path, 'wb') as f:
-                dill.dump(state, f)
-            print(f"Saved state to {self.state_file_path}")
-        except Exception as e:
-            print(f"Failed to save state. Error: {e}")  
-        try:
-            with open(self.pyboy_state_file_path, 'wb') as f:
-                self.game.save_state(f)
-            print(f'saved pyboy state file {self.pyboy_state_file_path}')
-        except:
-            print(f'{self.pyboy_state_file_path} failed to save pyboy state..')
-    
-    def select_best_states(self):
-        # Function to scan all folders containing .pkl .state files and order them
-        # from highest to lowest using various metrics:
-        # badge_1 completion "badge_1": float(self.badges >= 1)
-        # mt moon completion 
-        # badge_2 completion "badge_2": float(self.badges >= 2)
-        # bill completion int(ram_map.read_bit(self.game, 0xD7F2, 7))
-        # rubbed_captains_back int(ram_map.read_bit(self.game, 0xD803, 1))
-        # taught cut self.cut
-        # used cut on a good tree self.used_cut>0
-        pass
-        
-    # Version of loading fn that sorts env saved state folders by event_reward (in this case)
-    def load_state_from_directory_v2(self):
-        # Assuming self.exp_path is correctly set to the base path
-        # For example: '/puffertank/0.7/pufferlib/experiments/ydbo1df4'
-        # Ensure the base experiments path exists
-        if not self.exp_path.exists():
-            print(f"Experiments path does not exist: {self.exp_path}")
-            return
-        # Recursively find all .pkl files within the experiments path
-        pkl_files = list(self.exp_path.rglob('*_state.pkl'))
-        if not pkl_files:
-            print("No .pkl state files found across any sessions.")
-            return
-        # Extract the event_reward value and associate it with each found .pkl file
-        pkl_files_with_reward = [(file, float(re.search(r'event_reward_([0-9\.]+)', file.parent.as_posix()).group(1))) for file in pkl_files]
-        # Find the .pkl file with the highest event_reward value
-        highest_reward_file = max(pkl_files_with_reward, key=lambda x: x[1])[0]
-        # The corresponding .state file should have the same name except for the extension
-        selected_pyboy_file = highest_reward_file.with_suffix('.state')
-        print(f"Selected .pkl for loading: {highest_reward_file}")
-        print(f"Selected .state for loading: {selected_pyboy_file}")
-        # Load state from the .pkl file
-        try:
-            with open(highest_reward_file, 'rb') as f:
-                state = pickle.load(f)
-                for key, value in state.items():
-                    setattr(self, key, value)
-            print("Environment state loaded successfully.")
-        except Exception as e:
-            print(f"Failed to load environment state. Error: {e}")
-        # Load PyBoy state if the .state file exists
-        if selected_pyboy_file.exists():
-            try:
-                with open(selected_pyboy_file, 'rb') as f:
-                    self.game.load_state(f)  # Ensure this is the correct method to load your PyBoy state
-                print("PyBoy state loaded successfully.")
-            except Exception as e:
-                print(f"Failed to load PyBoy state. Error: {e}")
-        else:
-            print("Matching .state file not found.")
-        # Reset or initialize as necessary post-loading
-        self.reset_count = 0
-        self.step_count = 0
-        self.reset_count += 1
-        
-    def load_state_from_tuple(self):
-        # Retrieve the tuple of file paths for the current environment
-        with Base.lock:
-            files_to_load = self.shared_data[self.env_id].get("files_to_load", None)
-
-        if not files_to_load:
-            print("No files specified for loading.")
-            return
-
-        if files_to_load != None:
-            # Unpack the tuple into its components
-            pickled_file_path, pyboy_state_file_path = files_to_load
-
-            print(f"Selected .pkl for loading: {pickled_file_path}")
-            print(f"Selected .state for loading: {pyboy_state_file_path}")
-            
-            # Load state from the .pkl file
-            try:
-                with open(pickled_file_path, 'rb') as f:
-                    state = pickle.load(f)
-                    for key, value in state.items():
-                        setattr(self, key, value)
-                print(f"Environment state at {pickled_file_path} loaded successfully.")
-            except Exception as e:
-                print(f"Failed to load environment state. Error: {e}")
-            
-            # Load PyBoy state if the .state file exists
-            try:
-                with open(pyboy_state_file_path, 'rb') as f:
-                    self.game.load_state(f)  # Ensure this is the correct method to load your PyBoy state
-                print(f"PyBoy state at {pyboy_state_file_path} loaded successfully.")
-            except Exception as e:
-                print(f"Failed to load PyBoy state. Error: {e}")
-
-            # Reset or initialize as necessary post-loading
-            self.reset_count = 0
-            self.step_count = 0
-            self.reset_count += 1
-
-    def update_milestone(self, key, condition):
-        # Only update the milestone if the condition is met and it's either not recorded yet or we're recording a better time
-        if condition:
-            # Check if we've already recorded this milestone
-            if key not in self.shared_data[self.env_id] or self.current_time < self.shared_data[self.env_id][key][1]:
-                # Record the milestone as achieved with the current time
-                with Base.lock:  # Assuming you're using a multiprocessing lock for thread safety
-                    self.shared_data[self.env_id][key] = (1.0, self.current_time)
-
-    def assess_milestone_completion_percentage(self):
-        self.current_time = datetime.now() 
-        # Fetch current milestones data from shared_data or initialize if not present
-        current_milestones = self.shared_data.get(self.env_id, {})
-        
-        # Define a local function to update milestones only if needed
-
-                        
-        # Update each milestone if its condition is met
-        self.update_milestone("badge_1", self.badges >= 1)
-        self.update_milestone("mt_moon_completion", 'mt_moon_key' in self.completed_milestones)
-        self.update_milestone("badge_2", self.badges >= 2)
-        self.update_milestone("bill_completion", ram_map.read_bit(self.game, 0xD7F2, 7))
-        self.update_milestone("rubbed_captains_back", ram_map.read_bit(self.game, 0xD803, 1))
-        self.update_milestone("taught_cut", self.cut)
-        self.update_milestone("used_cut_on_good_tree", self.used_cut > 0)
-        self.shared_data[self.env_id]["files_to_load"] = None
-        
-        # Lock and update shared_data for this environment
-        with Base.lock:
-            self.shared_data[self.env_id] = current_milestones
-        
-    # One env computes each milestone completion % over all envs
-    def compute_overall_progress(self, shared_data):
-        milestone_keys = ["badge_1", "mt_moon_completion", "badge_2", 
-                        "bill_completion", "rubbed_captains_back", 
-                        "taught_cut", "used_cut_on_good_tree"]
-        overall_progress = {key: 0 for key in milestone_keys}  # Initialize dict  
-        for key in milestone_keys:
-            # Calculate average completion percentage for each milestone
-            overall_progress[key] = sum(data.get(key, (0, 0))[0] for data in shared_data.values()) / len(shared_data)
-        return overall_progress
-    
-    def assess_progress_for_action(self, overall_progress, milestone_threshold_dict):
-        actions_required = {}  # Dict to hold milestones that meet the threshold        
-        for key, threshold in milestone_threshold_dict.items():
-            if overall_progress.get(key, 0) >= threshold:
-                # Calculate percentage of envs to act upon based on completion
-                actions_required[key] = 1 - overall_progress[key]        
-        return actions_required
-    
-    # Call like assess_states_for_loading(shared_data, pkl_files, 
-    # (assess_progress_for_action(compute_overall_progress(shared_data)), milestone_threshold_dict))
-    def sort_and_assess_envs_for_loading(self, shared_data, actions_required, num_envs):
-        worst_envs, best_env_files = [], []
-        
-        # Assuming the shared_data structure now includes a 'files_to_load' entry for best environments
-        # that contains tuples of (pkl_file_path, state_file_path)
-        for milestone, action_percentage in actions_required.items():
-            # Filter and sort environments based on completion time
-            envs_completion_times = [(env_id, data[milestone][1], data.get("files_to_load", None)) 
-                                    for env_id, data in shared_data.items() 
-                                    if milestone in data]
-            sorted_envs = sorted(envs_completion_times, key=lambda x: x[1])
-            
-            # Calculate the split index based on action percentage
-            split_index = int(len(sorted_envs) * (1 - action_percentage))
-            
-            # Best environments - we're interested in their state files for loading
-            for _, _, files_to_load in sorted_envs[:split_index]:
-                if files_to_load is not None:
-                    best_env_files.append(files_to_load)
-            
-            # Worst environments - these need new states loaded into them
-            worst_envs.extend([env_id for env_id, _, _ in sorted_envs[split_index:]])
-        
-        # Deduplicate while preserving order for worst environments
-        worst_envs = list(dict.fromkeys(worst_envs))
-        
-        # Randomly assign state files from the best environments to the worst environments
-        for env_id in worst_envs:
-            if best_env_files:  # Check if there are any best environment files available
-                selected_files = random.choice(best_env_files)  # Randomly select a tuple of files
-                with Base.lock:
-                    self.shared_data[env_id]["files_to_load"] = selected_files
-            else:
-                print("No best environment files available for loading.")
+        return self.render(), reward, done, done, info
